@@ -24,27 +24,37 @@ router.get("/employees", async (req, res) => {
 });
 router.post("/employees", async (req, res) => {
     try {
-        const { name, email, password, role, department, designation, phone, employeeCode, joinedAt } = req.body;
-        if (!name || !email || !password) {
-            res.status(400).json({ error: "Name, email, and password are required" });
+        const { name, email, password, role, department, designation, phone, employeeCode, joinedAt, userId } = req.body;
+        if (!name || !password) {
+            res.status(400).json({ error: "Name and password are required" });
             return;
         }
         const hash = bcryptjs_1.default.hashSync(password, 10);
-        const { rows } = await pool_1.db.query(`INSERT INTO users (name, email, password_hash, role)
-       VALUES ($1, $2, $3, $4) RETURNING *`, [name, email, hash, role || "employee"]);
+        // Auto-generate user_id if not provided
+        let finalUserId = userId;
+        if (!finalUserId) {
+            const { rows: lastUser } = await pool_1.db.query("SELECT user_id FROM users WHERE user_id ~ '^[0-9]+$' ORDER BY user_id::int DESC LIMIT 1");
+            const lastId = lastUser[0] ? parseInt(lastUser[0].user_id) : 1000;
+            finalUserId = String(lastId + 1).padStart(4, '0');
+        }
+        const { rows } = await pool_1.db.query(`INSERT INTO users (name, full_name, email, password_hash, role, user_id)
+       VALUES ($1, $1, $2, $3, $4, $5) RETURNING *`, [name, email || null, hash, role || "employee", finalUserId]);
         const user = rows[0];
         await pool_1.db.query(`INSERT INTO employee_profiles (user_id, employee_code, department, designation, phone, joined_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`, [user.id, employeeCode || null, department || null, designation || null,
-            phone || null, joinedAt || null]);
-        res.status(201).json({ message: "Employee created", id: user.id });
+       VALUES ($1, $2, $3, $4, $5, $6)`, [user.id, employeeCode || null, department || null, designation || null, phone || null, joinedAt || null]);
+        // Create default schedule
+        await pool_1.db.query("INSERT INTO employee_schedules (employee_id) VALUES ($1) ON CONFLICT DO NOTHING", [user.id]);
+        // Assign default worksite
+        const { rows: worksites } = await pool_1.db.query("SELECT id FROM worksites LIMIT 1");
+        if (worksites.length > 0) {
+            await pool_1.db.query(`INSERT INTO employee_worksites (employee_id, worksite_id, is_default, assigned_by)
+         VALUES ($1, $2, true, $3) ON CONFLICT DO NOTHING`, [user.id, worksites[0].id, req.user.id]);
+        }
+        res.status(201).json({ message: "Employee created", id: user.id, userId: finalUserId });
     }
     catch (err) {
-        if (err.code === "23505") {
-            res.status(409).json({ error: "Email already exists" });
-        }
-        else {
-            res.status(500).json({ error: "Server error" });
-        }
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
     }
 });
 router.delete("/employees/:id", async (req, res) => {

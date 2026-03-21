@@ -43,7 +43,7 @@ const router = (0, express_1.Router)();
 router.post("/clock-in", auth_1.verifyJWT, (0, audit_1.auditLog)("clock_in", "attendance_sessions"), async (req, res) => {
     try {
         const { latitude, longitude } = req.body;
-        await (0, geofence_1.assertOnSite)(latitude, longitude);
+        await (0, geofence_1.assertOnSite)(req.user.id, latitude, longitude);
         const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "clock_in", {
             lat: latitude, lon: longitude, source: "manual",
@@ -57,7 +57,7 @@ router.post("/clock-in", auth_1.verifyJWT, (0, audit_1.auditLog)("clock_in", "at
 router.post("/clock-out", auth_1.verifyJWT, (0, audit_1.auditLog)("clock_out", "attendance_sessions"), async (req, res) => {
     try {
         const { latitude, longitude } = req.body;
-        await (0, geofence_1.assertOnSite)(latitude, longitude);
+        await (0, geofence_1.assertOnSite)(req.user.id, latitude, longitude);
         const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "clock_out", {
             lat: latitude, lon: longitude, source: "manual",
@@ -71,7 +71,7 @@ router.post("/clock-out", auth_1.verifyJWT, (0, audit_1.auditLog)("clock_out", "
 router.post("/break-start", auth_1.verifyJWT, (0, audit_1.auditLog)("break_start", "attendance_sessions"), async (req, res) => {
     try {
         const { latitude, longitude } = req.body;
-        await (0, geofence_1.assertOnSite)(latitude, longitude);
+        await (0, geofence_1.assertOnSite)(req.user.id, latitude, longitude);
         const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "break_start", {
             lat: latitude, lon: longitude, source: "manual",
@@ -85,7 +85,7 @@ router.post("/break-start", auth_1.verifyJWT, (0, audit_1.auditLog)("break_start
 router.post("/break-end", auth_1.verifyJWT, (0, audit_1.auditLog)("break_end", "attendance_sessions"), async (req, res) => {
     try {
         const { latitude, longitude } = req.body;
-        await (0, geofence_1.assertOnSite)(latitude, longitude);
+        await (0, geofence_1.assertOnSite)(req.user.id, latitude, longitude);
         const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "break_end", {
             lat: latitude, lon: longitude, source: "manual",

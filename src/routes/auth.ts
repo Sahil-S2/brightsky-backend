@@ -6,27 +6,40 @@ import { verifyJWT, AuthRequest } from "../middleware/auth";
 
 const router = Router();
 
+// Login with user_id (4-digit) or email
 router.post("/login", async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      res.status(400).json({ error: "Email and password required" });
+    const { userId, password, email } = req.body;
+
+    // Support both user_id and email login
+    let query: string;
+    let param: string;
+
+    if (userId) {
+      if (!/^[A-Za-z0-9]{4}$/.test(userId)) {
+        res.status(400).json({ error: "User ID must be exactly 4 characters." });
+        return;
+      }
+      query = "SELECT * FROM users WHERE user_id = $1 AND status = 'active'";
+      param = userId;
+    } else if (email) {
+      query = "SELECT * FROM users WHERE email = $1 AND status = 'active'";
+      param = email;
+    } else {
+      res.status(400).json({ error: "User ID or email required." });
       return;
     }
 
-    const { rows } = await db.query(
-      "SELECT * FROM users WHERE email = $1 AND status = 'active'",
-      [email]
-    );
+    const { rows } = await db.query(query, [param]);
     const user = rows[0];
 
     if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-      res.status(401).json({ error: "Invalid email or password" });
+      res.status(401).json({ error: "Invalid credentials." });
       return;
     }
 
     const accessToken = jwt.sign(
-      { id: user.id, role: user.role, name: user.name },
+      { id: user.id, role: user.role, name: user.full_name || user.name },
       process.env.JWT_SECRET!,
       { expiresIn: "8h" }
     );
@@ -39,8 +52,8 @@ router.post("/login", async (req: Request, res: Response) => {
 
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      secure: true,
+      sameSite: "none",
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
@@ -48,9 +61,10 @@ router.post("/login", async (req: Request, res: Response) => {
       accessToken,
       user: {
         id: user.id,
-        name: user.name,
+        name: user.full_name || user.name,
         email: user.email,
         role: user.role,
+        userId: user.user_id,
       },
     });
   } catch (err) {
@@ -62,28 +76,18 @@ router.post("/login", async (req: Request, res: Response) => {
 router.post("/refresh", async (req: Request, res: Response) => {
   try {
     const token = req.cookies?.refreshToken;
-    if (!token) {
-      res.status(401).json({ error: "No refresh token" });
-      return;
-    }
-
+    if (!token) { res.status(401).json({ error: "No refresh token" }); return; }
     const decoded = jwt.verify(token, process.env.REFRESH_SECRET!) as any;
     const { rows } = await db.query(
-      "SELECT * FROM users WHERE id = $1 AND status = 'active'",
-      [decoded.id]
+      "SELECT * FROM users WHERE id = $1 AND status = 'active'", [decoded.id]
     );
     const user = rows[0];
-    if (!user) {
-      res.status(401).json({ error: "User not found" });
-      return;
-    }
-
+    if (!user) { res.status(401).json({ error: "User not found" }); return; }
     const accessToken = jwt.sign(
-      { id: user.id, role: user.role, name: user.name },
+      { id: user.id, role: user.role, name: user.full_name || user.name },
       process.env.JWT_SECRET!,
       { expiresIn: "8h" }
     );
-
     res.json({ accessToken });
   } catch {
     res.status(401).json({ error: "Invalid refresh token" });
@@ -91,14 +95,14 @@ router.post("/refresh", async (req: Request, res: Response) => {
 });
 
 router.post("/logout", (req: Request, res: Response) => {
-  res.clearCookie("refreshToken");
-  res.json({ message: "Logged out successfully" });
+  res.clearCookie("refreshToken", { secure: true, sameSite: "none" });
+  res.json({ message: "Logged out" });
 });
 
 router.get("/me", verifyJWT, async (req: AuthRequest, res: Response) => {
   try {
     const { rows } = await db.query(
-      `SELECT u.id, u.name, u.email, u.role,
+      `SELECT u.id, u.name, u.full_name, u.email, u.role, u.user_id,
               ep.employee_code, ep.department, ep.designation, ep.phone, ep.joined_at
        FROM users u
        LEFT JOIN employee_profiles ep ON ep.user_id = u.id

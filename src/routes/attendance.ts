@@ -18,7 +18,7 @@ router.post(
   async (req: AuthRequest, res: Response) => {
     try {
       const { latitude, longitude } = req.body;
-      await assertOnSite(latitude, longitude);
+      await assertOnSite(req.user!.id, latitude, longitude);
       const session = await getOrCreateSession(req.user!.id);
       await recordPunch(req.user!.id, session.id, "clock_in", {
         lat: latitude, lon: longitude, source: "manual",
@@ -37,7 +37,7 @@ router.post(
   async (req: AuthRequest, res: Response) => {
     try {
       const { latitude, longitude } = req.body;
-      await assertOnSite(latitude, longitude);
+      await assertOnSite(req.user!.id, latitude, longitude);
       const session = await getOrCreateSession(req.user!.id);
       await recordPunch(req.user!.id, session.id, "clock_out", {
         lat: latitude, lon: longitude, source: "manual",
@@ -56,7 +56,7 @@ router.post(
   async (req: AuthRequest, res: Response) => {
     try {
       const { latitude, longitude } = req.body;
-      await assertOnSite(latitude, longitude);
+      await assertOnSite(req.user!.id, latitude, longitude);
       const session = await getOrCreateSession(req.user!.id);
       await recordPunch(req.user!.id, session.id, "break_start", {
         lat: latitude, lon: longitude, source: "manual",
@@ -75,7 +75,7 @@ router.post(
   async (req: AuthRequest, res: Response) => {
     try {
       const { latitude, longitude } = req.body;
-      await assertOnSite(latitude, longitude);
+      await assertOnSite(req.user!.id, latitude, longitude);
       const session = await getOrCreateSession(req.user!.id);
       await recordPunch(req.user!.id, session.id, "break_end", {
         lat: latitude, lon: longitude, source: "manual",

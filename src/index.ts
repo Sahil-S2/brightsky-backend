@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import auditRoutes from "./routes/audit";
 
+
 dotenv.config();
 
 import authRoutes from "./routes/auth";
@@ -13,6 +14,8 @@ import attendanceRoutes from "./routes/attendance";
 import adminRoutes from "./routes/admin";
 import settingsRoutes from "./routes/settings";
 import exportRoutes from "./routes/export";
+import worksiteRoutes from "./routes/worksites";
+import scheduleRoutes from "./routes/schedules";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -45,6 +48,8 @@ app.use("/api/admin",      adminRoutes);
 app.use("/api/settings",   settingsRoutes);
 app.use("/api/export",     exportRoutes);
 app.use("/api/audit-logs", auditRoutes);
+app.use("/api/worksites", worksiteRoutes);
+app.use("/api/employees", scheduleRoutes);
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });

@@ -22,6 +22,7 @@ app.use((0, helmet_1.default)());
 const allowedOrigins = [
     "http://localhost:3000",
     "https://brightsky-frontend.vercel.app",
+    "https://brightsky-api.sahilswarajjena456.workers.dev",
     process.env.FRONTEND_URL,
 ].filter(Boolean).map(o => o.replace(/\/$/, ""));
 app.use((0, cors_1.default)({

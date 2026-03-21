@@ -18,8 +18,20 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 app.use(helmet());
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://brightsky-frontend.vercel.app",
+  process.env.FRONTEND_URL,
+].filter(Boolean).map(o => o.replace(/\/$/, ""));
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || "http://localhost:3000",
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin.replace(/\/$/, ""))) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   credentials: true,
 }));
 app.use(morgan("dev"));

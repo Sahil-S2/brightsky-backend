@@ -98,4 +98,52 @@ router.get("/:id/employees", auth_1.verifyJWT, (0, auth_1.requireRole)("admin", 
         res.status(500).json({ error: "Server error" });
     }
 });
+// Get current employee's assigned worksite
+router.get("/my-assignment", auth_1.verifyJWT, async (req, res) => {
+    try {
+        const { rows } = await pool_1.db.query(`SELECT w.* FROM worksites w
+       JOIN employee_worksites ew ON ew.worksite_id = w.id
+       WHERE ew.employee_id = $1 AND ew.is_default = true
+       LIMIT 1`, [req.user.id]);
+        if (rows.length > 0) {
+            res.json(rows[0]);
+            return;
+        }
+        // Fallback to any assigned worksite
+        const { rows: any } = await pool_1.db.query(`SELECT w.* FROM worksites w
+       JOIN employee_worksites ew ON ew.worksite_id = w.id
+       WHERE ew.employee_id = $1 LIMIT 1`, [req.user.id]);
+        if (any.length > 0) {
+            res.json(any[0]);
+            return;
+        }
+        // Fallback to first worksite
+        const { rows: fallback } = await pool_1.db.query("SELECT * FROM worksites LIMIT 1");
+        res.json(fallback[0] || null);
+    }
+    catch (err) {
+        res.status(500).json({ error: "Server error" });
+    }
+});
+// Get assignments for all worksites with employee details
+router.get("/assignments", auth_1.verifyJWT, (0, auth_1.requireRole)("admin", "manager"), async (req, res) => {
+    try {
+        const { rows } = await pool_1.db.query(`SELECT 
+        w.id as worksite_id, w.name as worksite_name,
+        w.latitude, w.longitude, w.radius_feet,
+        u.id as employee_id, u.name as employee_name,
+        u.user_id, u.full_name,
+        ep.department, ep.designation, ep.employee_code,
+        ew.is_default, ew.assigned_at
+       FROM employee_worksites ew
+       JOIN worksites w ON w.id = ew.worksite_id
+       JOIN users u ON u.id = ew.employee_id
+       WHERE u.status = 'active'
+       ORDER BY w.name, u.name`);
+        res.json(rows);
+    }
+    catch (err) {
+        res.status(500).json({ error: "Server error" });
+    }
+});
 exports.default = router;

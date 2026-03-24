@@ -5,6 +5,7 @@ import morgan from "morgan";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import auditRoutes from "./routes/audit";
+import securityRoutes from "./routes/security";
 
 
 dotenv.config();
@@ -50,6 +51,7 @@ app.use("/api/export",     exportRoutes);
 app.use("/api/audit-logs", auditRoutes);
 app.use("/api/worksites", worksiteRoutes);
 app.use("/api/employees", scheduleRoutes);
+app.use("/api/security", securityRoutes);
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });

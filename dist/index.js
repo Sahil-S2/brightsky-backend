@@ -10,6 +10,7 @@ const morgan_1 = __importDefault(require("morgan"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const audit_1 = __importDefault(require("./routes/audit"));
+const security_1 = __importDefault(require("./routes/security"));
 dotenv_1.default.config();
 const auth_1 = __importDefault(require("./routes/auth"));
 const attendance_1 = __importDefault(require("./routes/attendance"));
@@ -49,6 +50,7 @@ app.use("/api/export", export_1.default);
 app.use("/api/audit-logs", audit_1.default);
 app.use("/api/worksites", worksites_1.default);
 app.use("/api/employees", schedules_1.default);
+app.use("/api/security", security_1.default);
 app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
 });

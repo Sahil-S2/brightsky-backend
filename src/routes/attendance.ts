@@ -17,6 +17,17 @@ router.post(
   auditLog("clock_in", "attendance_sessions"),
   async (req: AuthRequest, res: Response) => {
     try {
+      // Check if already clocked out today
+      const { rows: completed } = await db.query(
+        `SELECT id FROM attendance_sessions 
+         WHERE user_id = $1 AND work_date = CURRENT_DATE AND status = 'completed'`,
+        [req.user!.id]
+      );
+      if (completed.length > 0) {
+        res.status(409).json({ error: "You have already clocked out today. Cannot clock in again." });
+        return;
+      }
+
       const { latitude, longitude } = req.body;
       await assertOnSite(req.user!.id, latitude, longitude);
       const session = await getOrCreateSession(req.user!.id);

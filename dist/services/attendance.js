@@ -10,6 +10,28 @@ const VALID_TRANSITIONS = {
     clocked_in: ["break_start", "clock_out"],
     on_break: ["break_end"],
 };
+// Helper to get effective schedule for an employee (personal or global fallback)
+async function getEffectiveSchedule(userId) {
+    // Try employee-specific schedule
+    const { rows: schedRows } = await pool_1.db.query(`SELECT scheduled_start_time, scheduled_end_time
+     FROM employee_schedules
+     WHERE employee_id = $1`, [userId]);
+    if (schedRows.length) {
+        return schedRows[0];
+    }
+    // Fallback to global site settings
+    const { rows: settingsRows } = await pool_1.db.query(`SELECT working_hours_start, working_hours_end
+     FROM site_settings
+     WHERE id = 1`);
+    if (settingsRows.length) {
+        return {
+            scheduled_start_time: settingsRows[0].working_hours_start,
+            scheduled_end_time: settingsRows[0].working_hours_end,
+        };
+    }
+    // Ultimate fallback (should not happen)
+    return { scheduled_start_time: "07:00", scheduled_end_time: "17:00" };
+}
 async function getEmployeeStatus(userId) {
     const today = new Date().toISOString().slice(0, 10);
     const { rows: sessions } = await pool_1.db.query(`SELECT * FROM attendance_sessions WHERE user_id = $1 AND work_date = $2`, [userId, today]);
@@ -51,6 +73,12 @@ async function recordPunch(userId, sessionId, punchType, meta) {
     await updateSessionSummary(sessionId);
 }
 async function updateSessionSummary(sessionId) {
+    // First, fetch the session to get user_id
+    const { rows: sessionRows } = await pool_1.db.query(`SELECT user_id FROM attendance_sessions WHERE id = $1`, [sessionId]);
+    if (!sessionRows.length)
+        return;
+    const userId = sessionRows[0].user_id;
+    // Fetch all punches for this session in order
     const { rows: punches } = await pool_1.db.query(`SELECT * FROM punch_records WHERE session_id = $1 ORDER BY punch_time ASC`, [sessionId]);
     let clockInTime = null;
     let clockOutTime = null;
@@ -71,7 +99,7 @@ async function updateSessionSummary(sessionId) {
             breakStart = null;
         }
     }
-    // If still on break, count current break time too
+    // If still on break, count current break time
     if (breakStart) {
         breakMinutes += Math.round((new Date().getTime() - breakStart.getTime()) / 60000);
     }
@@ -81,19 +109,44 @@ async function updateSessionSummary(sessionId) {
         workedMinutes = Math.max(0, Math.round((endTime.getTime() - clockInTime.getTime()) / 60000) - breakMinutes);
     }
     const status = clockOutTime ? "completed" : "active";
+    // --- Overtime calculation ---
+    const schedule = await getEffectiveSchedule(userId);
+    let overtimeMinutes = 0;
+    if (clockInTime && schedule.scheduled_start_time) {
+        const [startHour, startMin] = schedule.scheduled_start_time.split(':').map(Number);
+        const scheduledStart = new Date(clockInTime);
+        scheduledStart.setHours(startHour, startMin, 0, 0);
+        if (clockInTime < scheduledStart) {
+            overtimeMinutes += Math.round((scheduledStart.getTime() - clockInTime.getTime()) / 60000);
+        }
+    }
+    if (clockOutTime && schedule.scheduled_end_time) {
+        const [endHour, endMin] = schedule.scheduled_end_time.split(':').map(Number);
+        const scheduledEnd = new Date(clockOutTime);
+        scheduledEnd.setHours(endHour, endMin, 0, 0);
+        if (clockOutTime > scheduledEnd) {
+            overtimeMinutes += Math.round((clockOutTime.getTime() - scheduledEnd.getTime()) / 60000);
+        }
+    }
+    const isOvertime = overtimeMinutes > 0;
+    // Update the session record
     await pool_1.db.query(`UPDATE attendance_sessions
-     SET clock_in_time  = $1,
-         clock_out_time = $2,
-         break_minutes  = $3,
-         worked_minutes = $4,
-         status         = $5,
-         updated_at     = NOW()
-     WHERE id = $6`, [
+     SET clock_in_time     = $1,
+         clock_out_time    = $2,
+         break_minutes     = $3,
+         worked_minutes    = $4,
+         status            = $5,
+         is_overtime       = $6,
+         overtime_minutes  = $7,
+         updated_at        = NOW()
+     WHERE id = $8`, [
         clockInTime?.toISOString() || null,
         clockOutTime?.toISOString() || null,
         Math.round(breakMinutes),
         Math.max(0, workedMinutes),
         status,
+        isOvertime,
+        overtimeMinutes,
         sessionId,
     ]);
 }

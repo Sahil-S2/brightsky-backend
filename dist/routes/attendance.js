@@ -42,6 +42,13 @@ const pool_1 = require("../db/pool");
 const router = (0, express_1.Router)();
 router.post("/clock-in", auth_1.verifyJWT, (0, audit_1.auditLog)("clock_in", "attendance_sessions"), async (req, res) => {
     try {
+        // Check if already clocked out today
+        const { rows: completed } = await pool_1.db.query(`SELECT id FROM attendance_sessions 
+         WHERE user_id = $1 AND work_date = CURRENT_DATE AND status = 'completed'`, [req.user.id]);
+        if (completed.length > 0) {
+            res.status(409).json({ error: "You have already clocked out today. Cannot clock in again." });
+            return;
+        }
         const { latitude, longitude } = req.body;
         await (0, geofence_1.assertOnSite)(req.user.id, latitude, longitude);
         const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
@@ -120,8 +127,19 @@ router.post("/heartbeat", auth_1.verifyJWT, async (req, res) => {
 router.get("/me/today", auth_1.verifyJWT, async (req, res) => {
     try {
         const today = new Date().toISOString().slice(0, 10);
-        const { rows: sessions } = await pool_1.db.query(`SELECT * FROM attendance_sessions WHERE user_id = $1 AND work_date = $2`, [req.user.id, today]);
-        const session = sessions[0] || null;
+        // First, try to get today's session
+        let { rows: sessions } = await pool_1.db.query(`SELECT * FROM attendance_sessions WHERE user_id = $1 AND work_date = $2`, [req.user.id, today]);
+        let session = sessions[0] || null;
+        // If no session today, look for an active session from a previous day
+        if (!session) {
+            const { rows: activeSessions } = await pool_1.db.query(`SELECT * FROM attendance_sessions 
+         WHERE user_id = $1 AND status = 'active'
+         ORDER BY work_date DESC
+         LIMIT 1`, [req.user.id]);
+            if (activeSessions.length > 0) {
+                session = activeSessions[0];
+            }
+        }
         let punches = [];
         if (session) {
             const { rows } = await pool_1.db.query(`SELECT * FROM punch_records WHERE session_id = $1 ORDER BY punch_time ASC`, [session.id]);

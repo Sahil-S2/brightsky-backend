@@ -89,6 +89,28 @@ router.post("/break-start", auth_1.verifyJWT, (0, audit_1.auditLog)("break_start
         res.status(err.status || 500).json({ error: err.message || "Server error" });
     }
 });
+router.post("/custom-break-start", auth_1.verifyJWT, (0, audit_1.auditLog)("break_start", "attendance_sessions"), async (req, res) => {
+    try {
+        const { latitude, longitude, reason } = req.body;
+        if (!reason?.trim()) {
+            res.status(400).json({ error: "Break reason is required." });
+            return;
+        }
+        await (0, geofence_1.assertOnSite)(req.user.id, latitude, longitude);
+        const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
+        await (0, attendance_1.recordPunch)(req.user.id, session.id, "break_start", {
+            lat: latitude,
+            lon: longitude,
+            source: "manual",
+            remarks: reason,
+            breakType: "work",
+        });
+        res.json({ message: "Work-related break started" });
+    }
+    catch (err) {
+        res.status(err.status || 500).json({ error: err.message || "Server error" });
+    }
+});
 router.post("/break-end", auth_1.verifyJWT, (0, audit_1.auditLog)("break_end", "attendance_sessions"), async (req, res) => {
     try {
         const { latitude, longitude } = req.body;
@@ -116,6 +138,7 @@ router.post("/heartbeat", auth_1.verifyJWT, async (req, res) => {
             await (0, attendance_1.recordPunch)(req.user.id, session.id, "break_start", {
                 lat: latitude, lon: longitude, source: "auto",
                 remarks: "Auto break — left geofence",
+                breakType: "personal",
             });
         }
         res.json({ onSite, distanceFt: Math.round(dist), status: await (0, attendance_1.getEmployeeStatus)(req.user.id) });

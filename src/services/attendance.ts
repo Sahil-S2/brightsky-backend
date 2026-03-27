@@ -75,7 +75,14 @@ export async function recordPunch(
   userId: string,
   sessionId: string,
   punchType: string,
-  meta: { lat?: number; lon?: number; source?: string; remarks?: string }
+  meta: {
+    lat?: number;
+    lon?: number;
+    source?: string;
+    remarks?: string;
+    breakType?: "personal" | "work";
+    breakCompleted?: boolean;
+  }
 ) {
   const currentStatus = await getEmployeeStatus(userId);
   const allowed = VALID_TRANSITIONS[currentStatus];
@@ -88,10 +95,21 @@ export async function recordPunch(
   }
 
   await db.query(
-    `INSERT INTO punch_records (user_id, session_id, punch_type, latitude, longitude, source, remarks)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [userId, sessionId, punchType, meta.lat || null, meta.lon || null,
-     meta.source || "manual", meta.remarks || ""]
+    `INSERT INTO punch_records
+       (user_id, session_id, punch_type, latitude, longitude, source, remarks,
+        break_type, break_completed)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      userId,
+      sessionId,
+      punchType,
+      meta.lat || null,
+      meta.lon || null,
+      meta.source || "manual",
+      meta.remarks || "",
+      meta.breakType || null,
+      meta.breakCompleted !== undefined ? meta.breakCompleted : null
+    ]
   );
 
   await updateSessionSummary(sessionId);

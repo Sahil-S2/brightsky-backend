@@ -67,9 +67,20 @@ async function recordPunch(userId, sessionId, punchType, meta) {
             message: `Cannot perform '${punchType}' when status is '${currentStatus}'`
         };
     }
-    await pool_1.db.query(`INSERT INTO punch_records (user_id, session_id, punch_type, latitude, longitude, source, remarks)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`, [userId, sessionId, punchType, meta.lat || null, meta.lon || null,
-        meta.source || "manual", meta.remarks || ""]);
+    await pool_1.db.query(`INSERT INTO punch_records
+       (user_id, session_id, punch_type, latitude, longitude, source, remarks,
+        break_type, break_completed)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [
+        userId,
+        sessionId,
+        punchType,
+        meta.lat || null,
+        meta.lon || null,
+        meta.source || "manual",
+        meta.remarks || "",
+        meta.breakType || null,
+        meta.breakCompleted !== undefined ? meta.breakCompleted : null
+    ]);
     await updateSessionSummary(sessionId);
 }
 async function updateSessionSummary(sessionId) {

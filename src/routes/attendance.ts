@@ -128,11 +128,27 @@ router.post(
 router.get("/me/today", verifyJWT, async (req: AuthRequest, res: Response) => {
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const { rows: sessions } = await db.query(
+    // First, try to get today's session
+    let { rows: sessions } = await db.query(
       `SELECT * FROM attendance_sessions WHERE user_id = $1 AND work_date = $2`,
       [req.user!.id, today]
     );
-    const session = sessions[0] || null;
+    let session = sessions[0] || null;
+
+    // If no session today, look for an active session from a previous day
+    if (!session) {
+      const { rows: activeSessions } = await db.query(
+        `SELECT * FROM attendance_sessions 
+         WHERE user_id = $1 AND status = 'active'
+         ORDER BY work_date DESC
+         LIMIT 1`,
+        [req.user!.id]
+      );
+      if (activeSessions.length > 0) {
+        session = activeSessions[0];
+      }
+    }
+
     let punches = [];
     if (session) {
       const { rows } = await db.query(
@@ -141,6 +157,7 @@ router.get("/me/today", verifyJWT, async (req: AuthRequest, res: Response) => {
       );
       punches = rows;
     }
+
     const status = await getEmployeeStatus(req.user!.id);
     res.json({ session, punches, status });
   } catch (err) {

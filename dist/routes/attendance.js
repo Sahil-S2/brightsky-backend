@@ -77,13 +77,17 @@ router.post("/clock-out", auth_1.verifyJWT, (0, audit_1.auditLog)("clock_out", "
 });
 router.post("/break-start", auth_1.verifyJWT, (0, audit_1.auditLog)("break_start", "attendance_sessions"), async (req, res) => {
     try {
-        const { latitude, longitude } = req.body;
-        await (0, geofence_1.assertOnSite)(req.user.id, latitude, longitude);
+        const { latitude, longitude, reason } = req.body;
+        // No on‑site check – personal break allowed anywhere
         const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "break_start", {
-            lat: latitude, lon: longitude, source: "manual",
+            lat: latitude,
+            lon: longitude,
+            source: "manual",
+            remarks: reason || "Personal break",
+            breakType: "personal",
         });
-        res.json({ message: "Break started" });
+        res.json({ message: "Personal break started." });
     }
     catch (err) {
         res.status(err.status || 500).json({ error: err.message || "Server error" });

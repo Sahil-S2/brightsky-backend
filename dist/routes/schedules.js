@@ -46,15 +46,30 @@ router.put("/:id/schedule", auth_1.verifyJWT, (0, auth_1.requireRole)("admin", "
 router.get("/:id/overtime", auth_1.verifyJWT, async (req, res) => {
     try {
         const { rows: schedRows } = await pool_1.db.query("SELECT * FROM employee_schedules WHERE employee_id=$1", [req.params.id]);
-        const schedule = schedRows[0];
+        let schedule = schedRows[0];
         if (!schedule) {
-            res.json({ isOvertime: false });
-            return;
+            // Fallback to site settings
+            const { rows: settingsRows } = await pool_1.db.query("SELECT working_hours_start, working_hours_end FROM site_settings WHERE id=1");
+            if (settingsRows.length) {
+                schedule = {
+                    scheduled_start_time: settingsRows[0].working_hours_start,
+                    scheduled_end_time: settingsRows[0].working_hours_end,
+                };
+            }
+            else {
+                res.json({ isOvertime: false });
+                return;
+            }
         }
         const now = new Date();
-        const [endH, endM] = (schedule.scheduled_end_time || "17:00").toString().split(":").map(Number);
-        const scheduledEnd = new Date();
+        const [endH, endM] = schedule.scheduled_end_time.toString().split(":").map(Number);
+        const scheduledEnd = new Date(now);
         scheduledEnd.setHours(endH, endM, 0, 0);
+        // Handle cross-midnight schedules
+        const [startH] = schedule.scheduled_start_time.toString().split(":").map(Number);
+        if (endH < startH) {
+            scheduledEnd.setDate(scheduledEnd.getDate() + 1);
+        }
         const { rows: sessRows } = await pool_1.db.query(`SELECT * FROM attendance_sessions
        WHERE user_id=$1 AND work_date=CURRENT_DATE AND status='active'`, [req.params.id]);
         const session = sessRows[0];

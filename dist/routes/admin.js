@@ -69,7 +69,11 @@ router.delete("/employees/:id", async (req, res) => {
 router.get("/attendance", async (req, res) => {
     try {
         const { user_id, date_from, date_to } = req.query;
-        const { rows } = await pool_1.db.query(`SELECT s.*, u.name, ep.employee_code
+        const { rows } = await pool_1.db.query(`SELECT 
+         s.id, s.user_id, s.work_date, s.clock_in_time, s.clock_out_time,
+         s.break_minutes, s.personal_break_minutes, s.work_break_minutes,
+         s.worked_minutes, s.status, s.is_overtime, s.overtime_minutes,
+         u.name, ep.employee_code
        FROM attendance_sessions s
        JOIN users u ON u.id = s.user_id
        LEFT JOIN employee_profiles ep ON ep.user_id = s.user_id
@@ -132,7 +136,9 @@ router.get("/reports/summary", async (req, res) => {
          ROUND(
            COUNT(CASE WHEN p.punch_type = 'break_start' THEN 1 END)::numeric /
            NULLIF(COUNT(DISTINCT s.id), 0), 1
-         ) as avg_breaks_per_day
+         ) as avg_breaks_per_day,
+         COALESCE(SUM(s.personal_break_minutes), 0) as personal_break_minutes,
+         COALESCE(SUM(s.work_break_minutes), 0) as work_break_minutes
        FROM users u
        LEFT JOIN employee_profiles ep ON ep.user_id = u.id
        LEFT JOIN attendance_sessions s ON s.user_id = u.id

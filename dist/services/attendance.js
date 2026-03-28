@@ -17,20 +17,32 @@ async function getEffectiveSchedule(userId) {
      FROM employee_schedules
      WHERE employee_id = $1`, [userId]);
     if (schedRows.length) {
-        return schedRows[0];
+        const { scheduled_start_time, scheduled_end_time } = schedRows[0];
+        return {
+            start: scheduled_start_time,
+            end: scheduled_end_time,
+            crossesMidnight: scheduled_end_time < scheduled_start_time
+        };
     }
     // Fallback to global site settings
     const { rows: settingsRows } = await pool_1.db.query(`SELECT working_hours_start, working_hours_end
      FROM site_settings
      WHERE id = 1`);
     if (settingsRows.length) {
+        const start = settingsRows[0].working_hours_start;
+        const end = settingsRows[0].working_hours_end;
         return {
-            scheduled_start_time: settingsRows[0].working_hours_start,
-            scheduled_end_time: settingsRows[0].working_hours_end,
+            start: start,
+            end: end,
+            crossesMidnight: end < start
         };
     }
-    // Ultimate fallback (should not happen)
-    return { scheduled_start_time: "07:00", scheduled_end_time: "17:00" };
+    // Ultimate fallback
+    return {
+        start: "07:00",
+        end: "17:00",
+        crossesMidnight: false
+    };
 }
 async function getEmployeeStatus(userId) {
     const today = new Date().toISOString().slice(0, 10);
@@ -84,57 +96,85 @@ async function recordPunch(userId, sessionId, punchType, meta) {
     await updateSessionSummary(sessionId);
 }
 async function updateSessionSummary(sessionId) {
-    // First, fetch the session to get user_id
+    // Fetch session's user_id
     const { rows: sessionRows } = await pool_1.db.query(`SELECT user_id FROM attendance_sessions WHERE id = $1`, [sessionId]);
     if (!sessionRows.length)
         return;
     const userId = sessionRows[0].user_id;
-    // Fetch all punches for this session in order
+    // Fetch all punches in order
     const { rows: punches } = await pool_1.db.query(`SELECT * FROM punch_records WHERE session_id = $1 ORDER BY punch_time ASC`, [sessionId]);
     let clockInTime = null;
     let clockOutTime = null;
-    let breakMinutes = 0;
     let breakStart = null;
+    let currentBreakType = null; // 'personal' or 'work'
+    let personalBreakMinutes = 0;
+    let workBreakMinutes = 0;
     for (const p of punches) {
+        const punchTime = new Date(p.punch_time);
         if (p.punch_type === "clock_in" || p.punch_type === "auto_clock_in") {
-            clockInTime = new Date(p.punch_time);
+            clockInTime = punchTime;
         }
         if (p.punch_type === "clock_out") {
-            clockOutTime = new Date(p.punch_time);
+            clockOutTime = punchTime;
         }
         if (p.punch_type === "break_start") {
-            breakStart = new Date(p.punch_time);
+            breakStart = punchTime;
+            currentBreakType = p.break_type; // 'personal' or 'work'
         }
         if (p.punch_type === "break_end" && breakStart) {
-            breakMinutes += Math.round((new Date(p.punch_time).getTime() - breakStart.getTime()) / 60000);
+            const breakDuration = Math.round((punchTime.getTime() - breakStart.getTime()) / 60000);
+            if (currentBreakType === "personal") {
+                personalBreakMinutes += breakDuration;
+            }
+            else if (currentBreakType === "work") {
+                workBreakMinutes += breakDuration;
+            }
+            else {
+                // Fallback: add to personal (old data)
+                personalBreakMinutes += breakDuration;
+            }
             breakStart = null;
+            currentBreakType = null;
         }
     }
     // If still on break, count current break time
     if (breakStart) {
-        breakMinutes += Math.round((new Date().getTime() - breakStart.getTime()) / 60000);
+        const ongoing = Math.round((new Date().getTime() - breakStart.getTime()) / 60000);
+        if (currentBreakType === "personal") {
+            personalBreakMinutes += ongoing;
+        }
+        else if (currentBreakType === "work") {
+            workBreakMinutes += ongoing;
+        }
+        else {
+            personalBreakMinutes += ongoing;
+        }
     }
+    const totalBreakMinutes = personalBreakMinutes + workBreakMinutes;
     let workedMinutes = 0;
     if (clockInTime) {
         const endTime = clockOutTime || new Date();
-        workedMinutes = Math.max(0, Math.round((endTime.getTime() - clockInTime.getTime()) / 60000) - breakMinutes);
+        workedMinutes = Math.max(0, Math.round((endTime.getTime() - clockInTime.getTime()) / 60000) - totalBreakMinutes);
     }
     const status = clockOutTime ? "completed" : "active";
-    // --- Overtime calculation ---
+    // --- Overtime calculation (same as before, using the schedule) ---
     const schedule = await getEffectiveSchedule(userId);
     let overtimeMinutes = 0;
-    if (clockInTime && schedule.scheduled_start_time) {
-        const [startHour, startMin] = schedule.scheduled_start_time.split(':').map(Number);
+    if (clockInTime && schedule.start) {
+        const [startHour, startMin] = schedule.start.split(':').map(Number);
         const scheduledStart = new Date(clockInTime);
         scheduledStart.setHours(startHour, startMin, 0, 0);
         if (clockInTime < scheduledStart) {
             overtimeMinutes += Math.round((scheduledStart.getTime() - clockInTime.getTime()) / 60000);
         }
     }
-    if (clockOutTime && schedule.scheduled_end_time) {
-        const [endHour, endMin] = schedule.scheduled_end_time.split(':').map(Number);
+    if (clockOutTime && schedule.end) {
+        const [endHour, endMin] = schedule.end.split(':').map(Number);
         const scheduledEnd = new Date(clockOutTime);
         scheduledEnd.setHours(endHour, endMin, 0, 0);
+        if (schedule.crossesMidnight && (endHour < parseInt(schedule.start.split(':')[0]))) {
+            scheduledEnd.setDate(scheduledEnd.getDate() + 1);
+        }
         if (clockOutTime > scheduledEnd) {
             overtimeMinutes += Math.round((clockOutTime.getTime() - scheduledEnd.getTime()) / 60000);
         }
@@ -145,15 +185,19 @@ async function updateSessionSummary(sessionId) {
      SET clock_in_time     = $1,
          clock_out_time    = $2,
          break_minutes     = $3,
-         worked_minutes    = $4,
-         status            = $5,
-         is_overtime       = $6,
-         overtime_minutes  = $7,
+         personal_break_minutes = $4,
+         work_break_minutes = $5,
+         worked_minutes    = $6,
+         status            = $7,
+         is_overtime       = $8,
+         overtime_minutes  = $9,
          updated_at        = NOW()
-     WHERE id = $8`, [
+     WHERE id = $10`, [
         clockInTime?.toISOString() || null,
         clockOutTime?.toISOString() || null,
-        Math.round(breakMinutes),
+        Math.round(totalBreakMinutes),
+        Math.round(personalBreakMinutes),
+        Math.round(workBreakMinutes),
         Math.max(0, workedMinutes),
         status,
         isOvertime,

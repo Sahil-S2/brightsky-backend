@@ -67,9 +67,10 @@ router.get("/:id/overtime", verifyJWT, async (req: AuthRequest, res: Response) =
     const scheduledEnd = new Date();
     scheduledEnd.setHours(endH, endM, 0, 0);
 
+    // Only consider active sessions from today
     const { rows: sessRows } = await db.query(
       `SELECT * FROM attendance_sessions
-       WHERE user_id=$1 AND work_date=CURRENT_DATE AND status='active'`,
+       WHERE user_id=$1 AND work_date = CURRENT_DATE AND status='active'`,
       [req.params.id]
     );
     const session = sessRows[0];

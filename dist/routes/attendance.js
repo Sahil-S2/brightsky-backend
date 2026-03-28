@@ -205,4 +205,44 @@ router.get("/me", auth_1.verifyJWT, async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+router.put("/break/:punchId/complete", auth_1.verifyJWT, async (req, res) => {
+    try {
+        const { punchId } = req.params;
+        const { rows } = await pool_1.db.query("SELECT user_id FROM punch_records WHERE id = $1", [punchId]);
+        if (rows.length === 0) {
+            res.status(404).json({ error: "Break not found" });
+            return;
+        }
+        if (rows[0].user_id !== req.user.id) {
+            res.status(403).json({ error: "Unauthorized" });
+            return;
+        }
+        await pool_1.db.query("UPDATE punch_records SET break_completed = true WHERE id = $1", [punchId]);
+        res.json({ message: "Break marked as completed" });
+    }
+    catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+router.get("/session/:sessionId/punches", auth_1.verifyJWT, async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const { rows: sessionRows } = await pool_1.db.query("SELECT user_id FROM attendance_sessions WHERE id = $1", [sessionId]);
+        if (sessionRows.length === 0) {
+            res.status(404).json({ error: "Session not found" });
+            return;
+        }
+        if (sessionRows[0].user_id !== req.user.id) {
+            res.status(403).json({ error: "Unauthorized" });
+            return;
+        }
+        const { rows: punches } = await pool_1.db.query("SELECT * FROM punch_records WHERE session_id = $1 ORDER BY punch_time ASC", [sessionId]);
+        res.json(punches);
+    }
+    catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
 exports.default = router;

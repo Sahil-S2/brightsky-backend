@@ -128,7 +128,7 @@ export async function recordPunch(
 }
 
 export async function updateSessionSummary(sessionId: string) {
-  // First, fetch the session to get user_id
+  // Fetch session's user_id
   const { rows: sessionRows } = await db.query(
     `SELECT user_id FROM attendance_sessions WHERE id = $1`,
     [sessionId]
@@ -136,7 +136,7 @@ export async function updateSessionSummary(sessionId: string) {
   if (!sessionRows.length) return;
   const userId = sessionRows[0].user_id;
 
-  // Fetch all punches for this session in order
+  // Fetch all punches in order
   const { rows: punches } = await db.query(
     `SELECT * FROM punch_records WHERE session_id = $1 ORDER BY punch_time ASC`,
     [sessionId]
@@ -144,71 +144,86 @@ export async function updateSessionSummary(sessionId: string) {
 
   let clockInTime: Date | null = null;
   let clockOutTime: Date | null = null;
-  let breakMinutes = 0;
   let breakStart: Date | null = null;
+  let currentBreakType: string | null = null; // 'personal' or 'work'
+  let personalBreakMinutes = 0;
+  let workBreakMinutes = 0;
 
   for (const p of punches) {
+    const punchTime = new Date(p.punch_time);
     if (p.punch_type === "clock_in" || p.punch_type === "auto_clock_in") {
-      clockInTime = new Date(p.punch_time);
+      clockInTime = punchTime;
     }
     if (p.punch_type === "clock_out") {
-      clockOutTime = new Date(p.punch_time);
+      clockOutTime = punchTime;
     }
     if (p.punch_type === "break_start") {
-      breakStart = new Date(p.punch_time);
+      breakStart = punchTime;
+      currentBreakType = p.break_type; // 'personal' or 'work'
     }
     if (p.punch_type === "break_end" && breakStart) {
-      breakMinutes += Math.round(
-        (new Date(p.punch_time).getTime() - breakStart.getTime()) / 60000
-      );
+      const breakDuration = Math.round((punchTime.getTime() - breakStart.getTime()) / 60000);
+      if (currentBreakType === "personal") {
+        personalBreakMinutes += breakDuration;
+      } else if (currentBreakType === "work") {
+        workBreakMinutes += breakDuration;
+      } else {
+        // Fallback: add to personal (old data)
+        personalBreakMinutes += breakDuration;
+      }
       breakStart = null;
+      currentBreakType = null;
     }
   }
 
   // If still on break, count current break time
   if (breakStart) {
-    breakMinutes += Math.round((new Date().getTime() - breakStart.getTime()) / 60000);
+    const ongoing = Math.round((new Date().getTime() - breakStart.getTime()) / 60000);
+    if (currentBreakType === "personal") {
+      personalBreakMinutes += ongoing;
+    } else if (currentBreakType === "work") {
+      workBreakMinutes += ongoing;
+    } else {
+      personalBreakMinutes += ongoing;
+    }
   }
+
+  const totalBreakMinutes = personalBreakMinutes + workBreakMinutes;
 
   let workedMinutes = 0;
   if (clockInTime) {
     const endTime = clockOutTime || new Date();
     workedMinutes = Math.max(
       0,
-      Math.round((endTime.getTime() - clockInTime.getTime()) / 60000) - breakMinutes
+      Math.round((endTime.getTime() - clockInTime.getTime()) / 60000) - totalBreakMinutes
     );
   }
 
   const status = clockOutTime ? "completed" : "active";
 
-  // --- Overtime calculation ---
-  // --- Overtime calculation ---
-const schedule = await getEffectiveSchedule(userId);
-let overtimeMinutes = 0;
-
-if (clockInTime && schedule.start) {
-  const [startHour, startMin] = schedule.start.split(':').map(Number);
-  const scheduledStart = new Date(clockInTime);
-  scheduledStart.setHours(startHour, startMin, 0, 0);
-  if (clockInTime < scheduledStart) {
-    overtimeMinutes += Math.round((scheduledStart.getTime() - clockInTime.getTime()) / 60000);
+  // --- Overtime calculation (same as before, using the schedule) ---
+  const schedule = await getEffectiveSchedule(userId);
+  let overtimeMinutes = 0;
+  if (clockInTime && schedule.start) {
+    const [startHour, startMin] = schedule.start.split(':').map(Number);
+    const scheduledStart = new Date(clockInTime);
+    scheduledStart.setHours(startHour, startMin, 0, 0);
+    if (clockInTime < scheduledStart) {
+      overtimeMinutes += Math.round((scheduledStart.getTime() - clockInTime.getTime()) / 60000);
+    }
   }
-}
-
-if (clockOutTime && schedule.end) {
-  const [endHour, endMin] = schedule.end.split(':').map(Number);
-  const scheduledEnd = new Date(clockOutTime);
-  scheduledEnd.setHours(endHour, endMin, 0, 0);
-  // If schedule crosses midnight, the end time is on the next day
-  if (schedule.crossesMidnight && (endHour < parseInt(schedule.start.split(':')[0]))) {
-    scheduledEnd.setDate(scheduledEnd.getDate() + 1);
+  if (clockOutTime && schedule.end) {
+    const [endHour, endMin] = schedule.end.split(':').map(Number);
+    const scheduledEnd = new Date(clockOutTime);
+    scheduledEnd.setHours(endHour, endMin, 0, 0);
+    if (schedule.crossesMidnight && (endHour < parseInt(schedule.start.split(':')[0]))) {
+      scheduledEnd.setDate(scheduledEnd.getDate() + 1);
+    }
+    if (clockOutTime > scheduledEnd) {
+      overtimeMinutes += Math.round((clockOutTime.getTime() - scheduledEnd.getTime()) / 60000);
+    }
   }
-  if (clockOutTime > scheduledEnd) {
-    overtimeMinutes += Math.round((clockOutTime.getTime() - scheduledEnd.getTime()) / 60000);
-  }
-}
-
-const isOvertime = overtimeMinutes > 0;
+  const isOvertime = overtimeMinutes > 0;
 
   // Update the session record
   await db.query(
@@ -216,16 +231,20 @@ const isOvertime = overtimeMinutes > 0;
      SET clock_in_time     = $1,
          clock_out_time    = $2,
          break_minutes     = $3,
-         worked_minutes    = $4,
-         status            = $5,
-         is_overtime       = $6,
-         overtime_minutes  = $7,
+         personal_break_minutes = $4,
+         work_break_minutes = $5,
+         worked_minutes    = $6,
+         status            = $7,
+         is_overtime       = $8,
+         overtime_minutes  = $9,
          updated_at        = NOW()
-     WHERE id = $8`,
+     WHERE id = $10`,
     [
       clockInTime?.toISOString() || null,
       clockOutTime?.toISOString() || null,
-      Math.round(breakMinutes),
+      Math.round(totalBreakMinutes),
+      Math.round(personalBreakMinutes),
+      Math.round(workBreakMinutes),
       Math.max(0, workedMinutes),
       status,
       isOvertime,

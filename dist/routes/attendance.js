@@ -226,6 +226,31 @@ router.put("/break/:punchId/complete", auth_1.verifyJWT, async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+router.put("/break/:punchId/not-complete", auth_1.verifyJWT, async (req, res) => {
+    try {
+        const { punchId } = req.params;
+        const { reason } = req.body;
+        if (!reason?.trim()) {
+            res.status(400).json({ error: "Reason for not completing is required." });
+            return;
+        }
+        const { rows } = await pool_1.db.query("SELECT user_id FROM punch_records WHERE id = $1", [punchId]);
+        if (rows.length === 0) {
+            res.status(404).json({ error: "Break not found" });
+            return;
+        }
+        if (rows[0].user_id !== req.user.id) {
+            res.status(403).json({ error: "Unauthorized" });
+            return;
+        }
+        await pool_1.db.query("UPDATE punch_records SET break_completed = false, break_incomplete_reason = $1 WHERE id = $2", [reason, punchId]);
+        res.json({ message: "Break marked as not completed" });
+    }
+    catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
 router.get("/session/:sessionId/punches", auth_1.verifyJWT, async (req, res) => {
     try {
         const { sessionId } = req.params;

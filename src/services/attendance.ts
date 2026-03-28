@@ -16,7 +16,12 @@ async function getEffectiveSchedule(userId: string) {
     [userId]
   );
   if (schedRows.length) {
-    return schedRows[0];
+    const { scheduled_start_time, scheduled_end_time } = schedRows[0];
+    return {
+      start: scheduled_start_time,
+      end: scheduled_end_time,
+      crossesMidnight: scheduled_end_time < scheduled_start_time
+    };
   }
   // Fallback to global site settings
   const { rows: settingsRows } = await db.query(
@@ -25,13 +30,20 @@ async function getEffectiveSchedule(userId: string) {
      WHERE id = 1`
   );
   if (settingsRows.length) {
+    const start = settingsRows[0].working_hours_start;
+    const end = settingsRows[0].working_hours_end;
     return {
-      scheduled_start_time: settingsRows[0].working_hours_start,
-      scheduled_end_time: settingsRows[0].working_hours_end,
+      start: start,
+      end: end,
+      crossesMidnight: end < start
     };
   }
-  // Ultimate fallback (should not happen)
-  return { scheduled_start_time: "07:00", scheduled_end_time: "17:00" };
+  // Ultimate fallback
+  return {
+    start: "07:00",
+    end: "17:00",
+    crossesMidnight: false
+  };
 }
 
 export async function getEmployeeStatus(userId: string): Promise<string> {
@@ -170,28 +182,33 @@ export async function updateSessionSummary(sessionId: string) {
   const status = clockOutTime ? "completed" : "active";
 
   // --- Overtime calculation ---
-  const schedule = await getEffectiveSchedule(userId);
-  let overtimeMinutes = 0;
+  // --- Overtime calculation ---
+const schedule = await getEffectiveSchedule(userId);
+let overtimeMinutes = 0;
 
-  if (clockInTime && schedule.scheduled_start_time) {
-    const [startHour, startMin] = schedule.scheduled_start_time.split(':').map(Number);
-    const scheduledStart = new Date(clockInTime);
-    scheduledStart.setHours(startHour, startMin, 0, 0);
-    if (clockInTime < scheduledStart) {
-      overtimeMinutes += Math.round((scheduledStart.getTime() - clockInTime.getTime()) / 60000);
-    }
+if (clockInTime && schedule.start) {
+  const [startHour, startMin] = schedule.start.split(':').map(Number);
+  const scheduledStart = new Date(clockInTime);
+  scheduledStart.setHours(startHour, startMin, 0, 0);
+  if (clockInTime < scheduledStart) {
+    overtimeMinutes += Math.round((scheduledStart.getTime() - clockInTime.getTime()) / 60000);
   }
+}
 
-  if (clockOutTime && schedule.scheduled_end_time) {
-    const [endHour, endMin] = schedule.scheduled_end_time.split(':').map(Number);
-    const scheduledEnd = new Date(clockOutTime);
-    scheduledEnd.setHours(endHour, endMin, 0, 0);
-    if (clockOutTime > scheduledEnd) {
-      overtimeMinutes += Math.round((clockOutTime.getTime() - scheduledEnd.getTime()) / 60000);
-    }
+if (clockOutTime && schedule.end) {
+  const [endHour, endMin] = schedule.end.split(':').map(Number);
+  const scheduledEnd = new Date(clockOutTime);
+  scheduledEnd.setHours(endHour, endMin, 0, 0);
+  // If schedule crosses midnight, the end time is on the next day
+  if (schedule.crossesMidnight && (endHour < parseInt(schedule.start.split(':')[0]))) {
+    scheduledEnd.setDate(scheduledEnd.getDate() + 1);
   }
+  if (clockOutTime > scheduledEnd) {
+    overtimeMinutes += Math.round((clockOutTime.getTime() - scheduledEnd.getTime()) / 60000);
+  }
+}
 
-  const isOvertime = overtimeMinutes > 0;
+const isOvertime = overtimeMinutes > 0;
 
   // Update the session record
   await db.query(

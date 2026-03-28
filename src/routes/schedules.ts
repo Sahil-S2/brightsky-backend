@@ -59,22 +59,44 @@ router.get("/:id/overtime", verifyJWT, async (req: AuthRequest, res: Response) =
       "SELECT * FROM employee_schedules WHERE employee_id=$1",
       [req.params.id]
     );
-    const schedule = schedRows[0];
-    if (!schedule) { res.json({ isOvertime: false }); return; }
+    let schedule = schedRows[0];
+    if (!schedule) {
+      // Fallback to site settings
+      const { rows: settingsRows } = await db.query(
+        "SELECT working_hours_start, working_hours_end FROM site_settings WHERE id=1"
+      );
+      if (settingsRows.length) {
+        schedule = {
+          scheduled_start_time: settingsRows[0].working_hours_start,
+          scheduled_end_time: settingsRows[0].working_hours_end,
+        };
+      } else {
+        res.json({ isOvertime: false });
+        return;
+      }
+    }
 
     const now = new Date();
-    const [endH, endM] = (schedule.scheduled_end_time||"17:00").toString().split(":").map(Number);
-    const scheduledEnd = new Date();
+    const [endH, endM] = schedule.scheduled_end_time.toString().split(":").map(Number);
+    const scheduledEnd = new Date(now);
     scheduledEnd.setHours(endH, endM, 0, 0);
 
-    // Only consider active sessions from today
+    // Handle cross-midnight schedules
+    const [startH] = schedule.scheduled_start_time.toString().split(":").map(Number);
+    if (endH < startH) {
+      scheduledEnd.setDate(scheduledEnd.getDate() + 1);
+    }
+
     const { rows: sessRows } = await db.query(
       `SELECT * FROM attendance_sessions
-       WHERE user_id=$1 AND work_date = CURRENT_DATE AND status='active'`,
+       WHERE user_id=$1 AND work_date=CURRENT_DATE AND status='active'`,
       [req.params.id]
     );
     const session = sessRows[0];
-    if (!session) { res.json({ isOvertime: false }); return; }
+    if (!session) {
+      res.json({ isOvertime: false });
+      return;
+    }
 
     const isOvertime = now > scheduledEnd;
     const overtimeMins = isOvertime

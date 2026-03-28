@@ -100,7 +100,8 @@ router.post("/custom-break-start", auth_1.verifyJWT, (0, audit_1.auditLog)("brea
             res.status(400).json({ error: "Break reason is required." });
             return;
         }
-        await (0, geofence_1.assertOnSite)(req.user.id, latitude, longitude);
+        // Remove the on‑site check
+        // await assertOnSite(req.user!.id, latitude, longitude);
         const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "break_start", {
             lat: latitude,

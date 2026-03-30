@@ -1,6 +1,8 @@
 import { Router, Response } from "express";
 import { verifyJWT, requireRole, AuthRequest } from "../middleware/auth";
 import { db } from "../db/pool";
+import { DateTime } from 'luxon';
+import { getUserTimezone } from "../services/attendance";
 
 const router = Router();
 
@@ -55,13 +57,15 @@ router.put("/:id/schedule", verifyJWT, requireRole("admin","manager"), async (re
 // Check overtime for a session
 router.get("/:id/overtime", verifyJWT, async (req: AuthRequest, res: Response) => {
   try {
+    const userId = req.params.id as string; // cast to string
+
+    // Get schedule (employee or global)
     const { rows: schedRows } = await db.query(
       "SELECT * FROM employee_schedules WHERE employee_id=$1",
-      [req.params.id]
+      [userId]
     );
     let schedule = schedRows[0];
     if (!schedule) {
-      // Fallback to site settings
       const { rows: settingsRows } = await db.query(
         "SELECT working_hours_start, working_hours_end FROM site_settings WHERE id=1"
       );
@@ -76,35 +80,38 @@ router.get("/:id/overtime", verifyJWT, async (req: AuthRequest, res: Response) =
       }
     }
 
-    const now = new Date();
-    const [endH, endM] = schedule.scheduled_end_time.toString().split(":").map(Number);
-    const scheduledEnd = new Date(now);
-    scheduledEnd.setHours(endH, endM, 0, 0);
-
-    // Handle cross-midnight schedules
-    const [startH] = schedule.scheduled_start_time.toString().split(":").map(Number);
-    if (endH < startH) {
-      scheduledEnd.setDate(scheduledEnd.getDate() + 1);
-    }
-
+    // Get any active session
     const { rows: sessRows } = await db.query(
       `SELECT * FROM attendance_sessions
-       WHERE user_id=$1 AND work_date=CURRENT_DATE AND status='active'`,
-      [req.params.id]
+       WHERE user_id=$1 AND status='active'`,
+      [userId]
     );
     const session = sessRows[0];
-    if (!session) {
+    if (!session) {   // <-- fixed: check for missing session
       res.json({ isOvertime: false });
       return;
     }
 
+    const userTz = await getUserTimezone(userId);
+    const clockInDateTime = DateTime.fromJSDate(new Date(session.clock_in_time), { zone: userTz });
+    const now = DateTime.now().setZone(userTz);
+
+    const [startH] = schedule.scheduled_start_time.toString().split(":").map(Number);
+    const [endH, endM] = schedule.scheduled_end_time.toString().split(":").map(Number);
+
+    let scheduledEnd = clockInDateTime.set({ hour: endH, minute: endM, second: 0, millisecond: 0 });
+    if (endH < startH) {
+      scheduledEnd = scheduledEnd.plus({ days: 1 }); // <-- fixed: use .plus()
+    }
+
     const isOvertime = now > scheduledEnd;
     const overtimeMins = isOvertime
-      ? Math.round((now.getTime() - scheduledEnd.getTime()) / 60000)
+      ? Math.round(now.diff(scheduledEnd, 'minutes').minutes)
       : 0;
 
-    res.json({ isOvertime, overtimeMins, scheduledEnd: scheduledEnd.toISOString() });
+    res.json({ isOvertime, overtimeMins, scheduledEnd: scheduledEnd.toISO() });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Server error" });
   }
 });

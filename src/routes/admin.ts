@@ -176,5 +176,18 @@ router.get("/reports/summary", async (req: AuthRequest, res: Response) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-
+router.put("/users/:id/timezone", verifyJWT, requireRole("admin", "manager"), async (req: AuthRequest, res: Response) => {
+  try {
+    const { timezone } = req.body;
+    const allowed = ['America/New_York', 'Asia/Kolkata'];
+    if (!allowed.includes(timezone)) {
+      res.status(400).json({ error: "Invalid timezone. Allowed: America/New_York, Asia/Kolkata" });
+      return;
+    }
+    await db.query("UPDATE users SET timezone = $1 WHERE id = $2", [timezone, req.params.id]);
+    res.json({ message: "Timezone updated" });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
 export default router;

@@ -6,6 +6,9 @@ import {
   getEmployeeStatus,
   getOrCreateSession,
   recordPunch,
+  getEffectiveSchedule,
+  getLastPunch,
+  getSessionData, // <-- new import
 } from "../services/attendance";
 import { db } from "../db/pool";
 
@@ -28,13 +31,18 @@ router.post(
         return;
       }
 
-      const { latitude, longitude } = req.body;
+      const { latitude, longitude, photo } = req.body; // <-- add photo
       await assertOnSite(req.user!.id, latitude, longitude);
       const session = await getOrCreateSession(req.user!.id);
       await recordPunch(req.user!.id, session.id, "clock_in", {
-        lat: latitude, lon: longitude, source: "manual",
+        lat: latitude,
+        lon: longitude,
+        source: "manual",
+        remarks: "",
+        photoData: photo, // <-- pass photo
       });
-      res.json({ message: "Clocked in successfully" });
+      const data = await getSessionData(req.user!.id);
+      res.json({ message: "Clocked in successfully", data });
     } catch (err: any) {
       res.status(err.status || 500).json({ error: err.message || "Server error" });
     }
@@ -53,7 +61,8 @@ router.post(
       await recordPunch(req.user!.id, session.id, "clock_out", {
         lat: latitude, lon: longitude, source: "manual",
       });
-      res.json({ message: "Clocked out successfully" });
+      const data = await getSessionData(req.user!.id);
+      res.json({ message: "Clocked out successfully", data });
     } catch (err: any) {
       res.status(err.status || 500).json({ error: err.message || "Server error" });
     }
@@ -76,7 +85,8 @@ router.post(
         remarks: reason || "Personal break",
         breakType: "personal",
       });
-      res.json({ message: "Personal break started." });
+      const data = await getSessionData(req.user!.id);
+      res.json({ message: "Personal break started.", data });
     } catch (err: any) {
       res.status(err.status || 500).json({ error: err.message || "Server error" });
     }
@@ -94,7 +104,7 @@ router.post(
         res.status(400).json({ error: "Break reason is required." });
         return;
       }
-      await assertOnSite(req.user!.id, latitude, longitude);
+      // Remove the on‑site check – work break allowed anywhere
       const session = await getOrCreateSession(req.user!.id);
       await recordPunch(req.user!.id, session.id, "break_start", {
         lat: latitude,
@@ -103,7 +113,8 @@ router.post(
         remarks: reason,
         breakType: "work",
       });
-      res.json({ message: "Work-related break started" });
+      const data = await getSessionData(req.user!.id);
+      res.json({ message: "Work-related break started", data });
     } catch (err: any) {
       res.status(err.status || 500).json({ error: err.message || "Server error" });
     }
@@ -122,7 +133,8 @@ router.post(
       await recordPunch(req.user!.id, session.id, "break_end", {
         lat: latitude, lon: longitude, source: "manual",
       });
-      res.json({ message: "Break ended" });
+      const data = await getSessionData(req.user!.id);
+      res.json({ message: "Break ended", data });
     } catch (err: any) {
       res.status(err.status || 500).json({ error: err.message || "Server error" });
     }
@@ -139,61 +151,63 @@ router.post(
       const { distanceFeet } = await import("../services/geofence");
       const dist = distanceFeet(latitude, longitude, settings.latitude, settings.longitude);
       const onSite = dist <= settings.radius_feet;
-      const status = await getEmployeeStatus(req.user!.id);
+      let status = await getEmployeeStatus(req.user!.id);
+      const session = await getOrCreateSession(req.user!.id);
 
+      // Auto start personal break when leaving geofence
       if (!onSite && status === "clocked_in" && settings.auto_break_on_exit_enabled) {
-        const session = await getOrCreateSession(req.user!.id);
         await recordPunch(req.user!.id, session.id, "break_start", {
           lat: latitude, lon: longitude, source: "auto",
           remarks: "Auto break — left geofence",
           breakType: "personal",
         });
+        status = await getEmployeeStatus(req.user!.id);
       }
 
-      res.json({ onSite, distanceFt: Math.round(dist), status: await getEmployeeStatus(req.user!.id) });
+      // Auto end personal break when re‑entering geofence
+      if (onSite && status === "on_break") {
+        const lastPunch = await getLastPunch(req.user!.id, session.id);
+        if (lastPunch?.break_type === "personal") {
+          await recordPunch(req.user!.id, session.id, "break_end", {
+            lat: latitude, lon: longitude, source: "auto",
+            remarks: "Auto break end — re-entered geofence",
+          });
+          status = await getEmployeeStatus(req.user!.id);
+        }
+      }
+
+      // Auto clock‑out after shift end if outside geofence
+      if (status === "clocked_in" && session && !session.clock_out_time) {
+        const schedule = await getEffectiveSchedule(req.user!.id);
+        const now = new Date();
+        const [endH, endM] = schedule.end.split(':').map(Number);
+        const scheduledEnd = new Date(now);
+        scheduledEnd.setHours(endH, endM, 0, 0);
+        // If schedule crosses midnight, adjust scheduledEnd to next day
+        if (schedule.crossesMidnight && (endH < parseInt(schedule.start.split(':')[0]))) {
+          scheduledEnd.setDate(scheduledEnd.getDate() + 1);
+        }
+        const afterShiftEnd = now > scheduledEnd;
+        if (afterShiftEnd && !onSite) {
+          await recordPunch(req.user!.id, session.id, "clock_out", {
+            lat: latitude, lon: longitude, source: "auto",
+            remarks: "Auto clock-out — shift ended and off-site",
+          });
+          status = await getEmployeeStatus(req.user!.id);
+        }
+      }
+
+      res.json({ onSite, distanceFt: Math.round(dist), status });
     } catch (err: any) {
       res.status(err.status || 500).json({ error: err.message || "Server error" });
     }
   }
 );
 
-
-
 router.get("/me/today", verifyJWT, async (req: AuthRequest, res: Response) => {
   try {
-    const today = new Date().toISOString().slice(0, 10);
-    // First, try to get today's session
-    let { rows: sessions } = await db.query(
-      `SELECT * FROM attendance_sessions WHERE user_id = $1 AND work_date = $2`,
-      [req.user!.id, today]
-    );
-    let session = sessions[0] || null;
-
-    // If no session today, look for an active session from a previous day
-    if (!session) {
-      const { rows: activeSessions } = await db.query(
-        `SELECT * FROM attendance_sessions 
-         WHERE user_id = $1 AND status = 'active'
-         ORDER BY work_date DESC
-         LIMIT 1`,
-        [req.user!.id]
-      );
-      if (activeSessions.length > 0) {
-        session = activeSessions[0];
-      }
-    }
-
-    let punches = [];
-    if (session) {
-      const { rows } = await db.query(
-        `SELECT * FROM punch_records WHERE session_id = $1 ORDER BY punch_time ASC`,
-        [session.id]
-      );
-      punches = rows;
-    }
-
-    const status = await getEmployeeStatus(req.user!.id);
-    res.json({ session, punches, status });
+    const data = await getSessionData(req.user!.id);
+    res.json(data);
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }
@@ -253,7 +267,46 @@ router.put(
         "UPDATE punch_records SET break_completed = true WHERE id = $1",
         [punchId]
       );
-      res.json({ message: "Break marked as completed" });
+      const data = await getSessionData(req.user!.id);
+      res.json({ message: "Break marked as completed", data });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+router.put(
+  "/break/:punchId/not-complete",
+  verifyJWT,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const { punchId } = req.params;
+      const { reason } = req.body;
+      if (!reason?.trim()) {
+        res.status(400).json({ error: "Reason for not completing is required." });
+        return;
+      }
+
+      const { rows } = await db.query(
+        "SELECT user_id FROM punch_records WHERE id = $1",
+        [punchId]
+      );
+      if (rows.length === 0) {
+        res.status(404).json({ error: "Break not found" });
+        return;
+      }
+      if (rows[0].user_id !== req.user!.id) {
+        res.status(403).json({ error: "Unauthorized" });
+        return;
+      }
+
+      await db.query(
+        "UPDATE punch_records SET break_completed = false, break_incomplete_reason = $1 WHERE id = $2",
+        [reason, punchId]
+      );
+      const data = await getSessionData(req.user!.id);
+      res.json({ message: "Break marked as not completed", data });
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: "Server error" });

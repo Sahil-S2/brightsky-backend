@@ -7,7 +7,7 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
 };
 
 // Helper to get effective schedule for an employee (personal or global fallback)
-async function getEffectiveSchedule(userId: string) {
+export async function getEffectiveSchedule(userId: string) {
   // Try employee-specific schedule
   const { rows: schedRows } = await db.query(
     `SELECT scheduled_start_time, scheduled_end_time
@@ -94,6 +94,7 @@ export async function recordPunch(
     remarks?: string;
     breakType?: "personal" | "work";
     breakCompleted?: boolean;
+    photoData?: string; // <-- new
   }
 ) {
   const currentStatus = await getEmployeeStatus(userId);
@@ -109,8 +110,8 @@ export async function recordPunch(
   await db.query(
     `INSERT INTO punch_records
        (user_id, session_id, punch_type, latitude, longitude, source, remarks,
-        break_type, break_completed)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        break_type, break_completed, photo_data)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       userId,
       sessionId,
@@ -120,7 +121,8 @@ export async function recordPunch(
       meta.source || "manual",
       meta.remarks || "",
       meta.breakType || null,
-      meta.breakCompleted !== undefined ? meta.breakCompleted : null
+      meta.breakCompleted !== undefined ? meta.breakCompleted : null,
+      meta.photoData || null, // <-- new
     ]
   );
 
@@ -252,4 +254,41 @@ export async function updateSessionSummary(sessionId: string) {
       sessionId,
     ]
   );
+}
+
+export async function getSessionData(userId: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  const { rows: sessions } = await db.query(
+    "SELECT * FROM attendance_sessions WHERE user_id = $1 AND work_date = $2",
+    [userId, today]
+  );
+  const session = sessions[0] || null;
+  let punches = [];
+  if (session) {
+    const { rows } = await db.query(
+      "SELECT * FROM punch_records WHERE session_id = $1 ORDER BY punch_time ASC",
+      [session.id]
+    );
+    punches = rows;
+  }
+  const status = await getEmployeeStatus(userId);
+  return { session, punches, status };
+}
+
+export async function getLastPunch(userId: string, sessionId: string) {
+  const { rows } = await db.query(
+    `SELECT * FROM punch_records 
+     WHERE user_id = $1 AND session_id = $2 
+     ORDER BY punch_time DESC LIMIT 1`,
+    [userId, sessionId]
+  );
+  return rows[0] || null;
+}
+
+export async function getUserTimezone(userId: string): Promise<string> {
+  const { rows } = await db.query(
+    "SELECT timezone FROM users WHERE id = $1",
+    [userId]
+  );
+  return rows[0]?.timezone || 'America/New_York';
 }

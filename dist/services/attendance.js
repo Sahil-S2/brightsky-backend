@@ -7,6 +7,7 @@ exports.recordPunch = recordPunch;
 exports.updateSessionSummary = updateSessionSummary;
 exports.getSessionData = getSessionData;
 exports.getLastPunch = getLastPunch;
+exports.getUserTimezone = getUserTimezone;
 const pool_1 = require("../db/pool");
 const VALID_TRANSITIONS = {
     clocked_out: ["clock_in"],
@@ -226,4 +227,8 @@ async function getLastPunch(userId, sessionId) {
      WHERE user_id = $1 AND session_id = $2 
      ORDER BY punch_time DESC LIMIT 1`, [userId, sessionId]);
     return rows[0] || null;
+}
+async function getUserTimezone(userId) {
+    const { rows } = await pool_1.db.query("SELECT timezone FROM users WHERE id = $1", [userId]);
+    return rows[0]?.timezone || 'America/New_York';
 }

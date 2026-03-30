@@ -145,16 +145,49 @@ router.post("/heartbeat", auth_1.verifyJWT, async (req, res) => {
         const { distanceFeet } = await Promise.resolve().then(() => __importStar(require("../services/geofence")));
         const dist = distanceFeet(latitude, longitude, settings.latitude, settings.longitude);
         const onSite = dist <= settings.radius_feet;
-        const status = await (0, attendance_1.getEmployeeStatus)(req.user.id);
+        let status = await (0, attendance_1.getEmployeeStatus)(req.user.id);
+        const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
+        // Auto start personal break when leaving geofence
         if (!onSite && status === "clocked_in" && settings.auto_break_on_exit_enabled) {
-            const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
             await (0, attendance_1.recordPunch)(req.user.id, session.id, "break_start", {
                 lat: latitude, lon: longitude, source: "auto",
                 remarks: "Auto break — left geofence",
                 breakType: "personal",
             });
+            status = await (0, attendance_1.getEmployeeStatus)(req.user.id);
         }
-        res.json({ onSite, distanceFt: Math.round(dist), status: await (0, attendance_1.getEmployeeStatus)(req.user.id) });
+        // Auto end personal break when re‑entering geofence
+        if (onSite && status === "on_break") {
+            const lastPunch = await (0, attendance_1.getLastPunch)(req.user.id, session.id);
+            if (lastPunch?.break_type === "personal") {
+                await (0, attendance_1.recordPunch)(req.user.id, session.id, "break_end", {
+                    lat: latitude, lon: longitude, source: "auto",
+                    remarks: "Auto break end — re-entered geofence",
+                });
+                status = await (0, attendance_1.getEmployeeStatus)(req.user.id);
+            }
+        }
+        // Auto clock‑out after shift end if outside geofence
+        if (status === "clocked_in" && session && !session.clock_out_time) {
+            const schedule = await (0, attendance_1.getEffectiveSchedule)(req.user.id);
+            const now = new Date();
+            const [endH, endM] = schedule.end.split(':').map(Number);
+            const scheduledEnd = new Date(now);
+            scheduledEnd.setHours(endH, endM, 0, 0);
+            // If schedule crosses midnight, adjust scheduledEnd to next day
+            if (schedule.crossesMidnight && (endH < parseInt(schedule.start.split(':')[0]))) {
+                scheduledEnd.setDate(scheduledEnd.getDate() + 1);
+            }
+            const afterShiftEnd = now > scheduledEnd;
+            if (afterShiftEnd && !onSite) {
+                await (0, attendance_1.recordPunch)(req.user.id, session.id, "clock_out", {
+                    lat: latitude, lon: longitude, source: "auto",
+                    remarks: "Auto clock-out — shift ended and off-site",
+                });
+                status = await (0, attendance_1.getEmployeeStatus)(req.user.id);
+            }
+        }
+        res.json({ onSite, distanceFt: Math.round(dist), status });
     }
     catch (err) {
         res.status(err.status || 500).json({ error: err.message || "Server error" });

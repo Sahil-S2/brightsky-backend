@@ -1,10 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getEffectiveSchedule = getEffectiveSchedule;
 exports.getEmployeeStatus = getEmployeeStatus;
 exports.getOrCreateSession = getOrCreateSession;
 exports.recordPunch = recordPunch;
 exports.updateSessionSummary = updateSessionSummary;
 exports.getSessionData = getSessionData;
+exports.getLastPunch = getLastPunch;
 const pool_1 = require("../db/pool");
 const VALID_TRANSITIONS = {
     clocked_out: ["clock_in"],
@@ -218,4 +220,10 @@ async function getSessionData(userId) {
     }
     const status = await getEmployeeStatus(userId);
     return { session, punches, status };
+}
+async function getLastPunch(userId, sessionId) {
+    const { rows } = await pool_1.db.query(`SELECT * FROM punch_records 
+     WHERE user_id = $1 AND session_id = $2 
+     ORDER BY punch_time DESC LIMIT 1`, [userId, sessionId]);
+    return rows[0] || null;
 }

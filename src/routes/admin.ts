@@ -10,7 +10,7 @@ router.use(verifyJWT, requireRole("admin", "manager"));
 router.get("/employees", async (req: AuthRequest, res: Response) => {
   try {
     const { rows } = await db.query(
-      `SELECT u.id, u.name, u.email, u.role, u.status, u.created_at,
+      `SELECT u.id, u.name, u.email, u.role, u.status, u.created_at, u.timezone,
               ep.employee_code, ep.department, ep.designation, ep.phone, ep.joined_at
        FROM users u
        LEFT JOIN employee_profiles ep ON ep.user_id = u.id

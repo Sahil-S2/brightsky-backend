@@ -11,7 +11,7 @@ const router = (0, express_1.Router)();
 router.use(auth_1.verifyJWT, (0, auth_1.requireRole)("admin", "manager"));
 router.get("/employees", async (req, res) => {
     try {
-        const { rows } = await pool_1.db.query(`SELECT u.id, u.name, u.email, u.role, u.status, u.created_at,
+        const { rows } = await pool_1.db.query(`SELECT u.id, u.name, u.email, u.role, u.status, u.created_at, u.timezone,
               ep.employee_code, ep.department, ep.designation, ep.phone, ep.joined_at
        FROM users u
        LEFT JOIN employee_profiles ep ON ep.user_id = u.id

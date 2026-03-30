@@ -65,6 +65,7 @@ router.post("/login", async (req: Request, res: Response) => {
         email: user.email,
         role: user.role,
         userId: user.user_id,
+        timezone: user.timezone,
       },
     });
   } catch (err) {

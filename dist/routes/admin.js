@@ -9,16 +9,39 @@ const pool_1 = require("../db/pool");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const router = (0, express_1.Router)();
 router.use(auth_1.verifyJWT, (0, auth_1.requireRole)("admin", "manager"));
-router.get("/employees", async (req, res) => {
+router.post("/employees", async (req, res) => {
     try {
-        const { rows } = await pool_1.db.query(`SELECT u.id, u.name, u.email, u.role, u.status, u.created_at, u.timezone,
-              ep.employee_code, ep.department, ep.designation, ep.phone, ep.joined_at
-       FROM users u
-       LEFT JOIN employee_profiles ep ON ep.user_id = u.id
-       ORDER BY u.name`);
-        res.json(rows);
+        const { name, email, password, role, department, designation, phone, employeeCode, joinedAt, userId, timezone } = req.body;
+        if (!name || !password) {
+            res.status(400).json({ error: "Name and password are required" });
+            return;
+        }
+        const hash = bcryptjs_1.default.hashSync(password, 10);
+        // Auto-generate user_id if not provided
+        let finalUserId = userId;
+        if (!finalUserId) {
+            const { rows: lastUser } = await pool_1.db.query("SELECT user_id FROM users WHERE user_id ~ '^[0-9]+$' ORDER BY user_id::int DESC LIMIT 1");
+            const lastId = lastUser[0] ? parseInt(lastUser[0].user_id) : 1000;
+            finalUserId = String(lastId + 1).padStart(4, '0');
+        }
+        const finalTimezone = timezone && ['America/New_York', 'Asia/Kolkata'].includes(timezone) ? timezone : 'America/New_York';
+        const { rows } = await pool_1.db.query(`INSERT INTO users (name, full_name, email, password_hash, role, user_id, timezone)
+       VALUES ($1, $1, $2, $3, $4, $5, $6) RETURNING *`, [name, email || null, hash, role || "employee", finalUserId, finalTimezone]);
+        const user = rows[0];
+        await pool_1.db.query(`INSERT INTO employee_profiles (user_id, employee_code, department, designation, phone, joined_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`, [user.id, employeeCode || null, department || null, designation || null, phone || null, joinedAt || null]);
+        // Create default schedule
+        await pool_1.db.query("INSERT INTO employee_schedules (employee_id) VALUES ($1) ON CONFLICT DO NOTHING", [user.id]);
+        // Assign default worksite (optional)
+        const { rows: worksites } = await pool_1.db.query("SELECT id FROM worksites LIMIT 1");
+        if (worksites.length > 0) {
+            await pool_1.db.query(`INSERT INTO employee_worksites (employee_id, worksite_id, is_default, assigned_by)
+         VALUES ($1, $2, true, $3) ON CONFLICT DO NOTHING`, [user.id, worksites[0].id, req.user.id]);
+        }
+        res.status(201).json({ message: "Employee created", id: user.id, userId: finalUserId });
     }
     catch (err) {
+        console.error(err);
         res.status(500).json({ error: "Server error" });
     }
 });

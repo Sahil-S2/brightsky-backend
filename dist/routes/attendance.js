@@ -49,11 +49,15 @@ router.post("/clock-in", auth_1.verifyJWT, (0, audit_1.auditLog)("clock_in", "at
             res.status(409).json({ error: "You have already clocked out today. Cannot clock in again." });
             return;
         }
-        const { latitude, longitude } = req.body;
+        const { latitude, longitude, photo } = req.body; // <-- add photo
         await (0, geofence_1.assertOnSite)(req.user.id, latitude, longitude);
         const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "clock_in", {
-            lat: latitude, lon: longitude, source: "manual",
+            lat: latitude,
+            lon: longitude,
+            source: "manual",
+            remarks: "",
+            photoData: photo, // <-- pass photo
         });
         const data = await (0, attendance_1.getSessionData)(req.user.id);
         res.json({ message: "Clocked in successfully", data });

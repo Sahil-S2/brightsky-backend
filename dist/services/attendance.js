@@ -82,8 +82,8 @@ async function recordPunch(userId, sessionId, punchType, meta) {
     }
     await pool_1.db.query(`INSERT INTO punch_records
        (user_id, session_id, punch_type, latitude, longitude, source, remarks,
-        break_type, break_completed)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [
+        break_type, break_completed, photo_data)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, [
         userId,
         sessionId,
         punchType,
@@ -92,7 +92,8 @@ async function recordPunch(userId, sessionId, punchType, meta) {
         meta.source || "manual",
         meta.remarks || "",
         meta.breakType || null,
-        meta.breakCompleted !== undefined ? meta.breakCompleted : null
+        meta.breakCompleted !== undefined ? meta.breakCompleted : null,
+        meta.photoData || null, // <-- new
     ]);
     await updateSessionSummary(sessionId);
 }

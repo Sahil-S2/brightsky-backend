@@ -55,7 +55,8 @@ router.post("/clock-in", auth_1.verifyJWT, (0, audit_1.auditLog)("clock_in", "at
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "clock_in", {
             lat: latitude, lon: longitude, source: "manual",
         });
-        res.json({ message: "Clocked in successfully" });
+        const data = await (0, attendance_1.getSessionData)(req.user.id);
+        res.json({ message: "Clocked in successfully", data });
     }
     catch (err) {
         res.status(err.status || 500).json({ error: err.message || "Server error" });
@@ -69,7 +70,8 @@ router.post("/clock-out", auth_1.verifyJWT, (0, audit_1.auditLog)("clock_out", "
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "clock_out", {
             lat: latitude, lon: longitude, source: "manual",
         });
-        res.json({ message: "Clocked out successfully" });
+        const data = await (0, attendance_1.getSessionData)(req.user.id);
+        res.json({ message: "Clocked out successfully", data });
     }
     catch (err) {
         res.status(err.status || 500).json({ error: err.message || "Server error" });
@@ -87,7 +89,8 @@ router.post("/break-start", auth_1.verifyJWT, (0, audit_1.auditLog)("break_start
             remarks: reason || "Personal break",
             breakType: "personal",
         });
-        res.json({ message: "Personal break started." });
+        const data = await (0, attendance_1.getSessionData)(req.user.id);
+        res.json({ message: "Personal break started.", data });
     }
     catch (err) {
         res.status(err.status || 500).json({ error: err.message || "Server error" });
@@ -100,8 +103,7 @@ router.post("/custom-break-start", auth_1.verifyJWT, (0, audit_1.auditLog)("brea
             res.status(400).json({ error: "Break reason is required." });
             return;
         }
-        // Remove the on‑site check
-        // await assertOnSite(req.user!.id, latitude, longitude);
+        // Remove the on‑site check – work break allowed anywhere
         const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "break_start", {
             lat: latitude,
@@ -110,7 +112,8 @@ router.post("/custom-break-start", auth_1.verifyJWT, (0, audit_1.auditLog)("brea
             remarks: reason,
             breakType: "work",
         });
-        res.json({ message: "Work-related break started" });
+        const data = await (0, attendance_1.getSessionData)(req.user.id);
+        res.json({ message: "Work-related break started", data });
     }
     catch (err) {
         res.status(err.status || 500).json({ error: err.message || "Server error" });
@@ -124,7 +127,8 @@ router.post("/break-end", auth_1.verifyJWT, (0, audit_1.auditLog)("break_end", "
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "break_end", {
             lat: latitude, lon: longitude, source: "manual",
         });
-        res.json({ message: "Break ended" });
+        const data = await (0, attendance_1.getSessionData)(req.user.id);
+        res.json({ message: "Break ended", data });
     }
     catch (err) {
         res.status(err.status || 500).json({ error: err.message || "Server error" });
@@ -154,27 +158,8 @@ router.post("/heartbeat", auth_1.verifyJWT, async (req, res) => {
 });
 router.get("/me/today", auth_1.verifyJWT, async (req, res) => {
     try {
-        const today = new Date().toISOString().slice(0, 10);
-        // First, try to get today's session
-        let { rows: sessions } = await pool_1.db.query(`SELECT * FROM attendance_sessions WHERE user_id = $1 AND work_date = $2`, [req.user.id, today]);
-        let session = sessions[0] || null;
-        // If no session today, look for an active session from a previous day
-        if (!session) {
-            const { rows: activeSessions } = await pool_1.db.query(`SELECT * FROM attendance_sessions 
-         WHERE user_id = $1 AND status = 'active'
-         ORDER BY work_date DESC
-         LIMIT 1`, [req.user.id]);
-            if (activeSessions.length > 0) {
-                session = activeSessions[0];
-            }
-        }
-        let punches = [];
-        if (session) {
-            const { rows } = await pool_1.db.query(`SELECT * FROM punch_records WHERE session_id = $1 ORDER BY punch_time ASC`, [session.id]);
-            punches = rows;
-        }
-        const status = await (0, attendance_1.getEmployeeStatus)(req.user.id);
-        res.json({ session, punches, status });
+        const data = await (0, attendance_1.getSessionData)(req.user.id);
+        res.json(data);
     }
     catch (err) {
         res.status(500).json({ error: "Server error" });
@@ -219,7 +204,8 @@ router.put("/break/:punchId/complete", auth_1.verifyJWT, async (req, res) => {
             return;
         }
         await pool_1.db.query("UPDATE punch_records SET break_completed = true WHERE id = $1", [punchId]);
-        res.json({ message: "Break marked as completed" });
+        const data = await (0, attendance_1.getSessionData)(req.user.id);
+        res.json({ message: "Break marked as completed", data });
     }
     catch (err) {
         console.error(err);
@@ -244,7 +230,8 @@ router.put("/break/:punchId/not-complete", auth_1.verifyJWT, async (req, res) =>
             return;
         }
         await pool_1.db.query("UPDATE punch_records SET break_completed = false, break_incomplete_reason = $1 WHERE id = $2", [reason, punchId]);
-        res.json({ message: "Break marked as not completed" });
+        const data = await (0, attendance_1.getSessionData)(req.user.id);
+        res.json({ message: "Break marked as not completed", data });
     }
     catch (err) {
         console.error(err);

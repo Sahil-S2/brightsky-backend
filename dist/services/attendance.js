@@ -4,6 +4,7 @@ exports.getEmployeeStatus = getEmployeeStatus;
 exports.getOrCreateSession = getOrCreateSession;
 exports.recordPunch = recordPunch;
 exports.updateSessionSummary = updateSessionSummary;
+exports.getSessionData = getSessionData;
 const pool_1 = require("../db/pool");
 const VALID_TRANSITIONS = {
     clocked_out: ["clock_in"],
@@ -204,4 +205,16 @@ async function updateSessionSummary(sessionId) {
         overtimeMinutes,
         sessionId,
     ]);
+}
+async function getSessionData(userId) {
+    const today = new Date().toISOString().slice(0, 10);
+    const { rows: sessions } = await pool_1.db.query("SELECT * FROM attendance_sessions WHERE user_id = $1 AND work_date = $2", [userId, today]);
+    const session = sessions[0] || null;
+    let punches = [];
+    if (session) {
+        const { rows } = await pool_1.db.query("SELECT * FROM punch_records WHERE session_id = $1 ORDER BY punch_time ASC", [session.id]);
+        punches = rows;
+    }
+    const status = await getEmployeeStatus(userId);
+    return { session, punches, status };
 }

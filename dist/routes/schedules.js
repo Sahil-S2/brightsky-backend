@@ -48,7 +48,6 @@ router.get("/:id/overtime", auth_1.verifyJWT, async (req, res) => {
         const { rows: schedRows } = await pool_1.db.query("SELECT * FROM employee_schedules WHERE employee_id=$1", [req.params.id]);
         let schedule = schedRows[0];
         if (!schedule) {
-            // Fallback to site settings
             const { rows: settingsRows } = await pool_1.db.query("SELECT working_hours_start, working_hours_end FROM site_settings WHERE id=1");
             if (settingsRows.length) {
                 schedule = {
@@ -61,21 +60,24 @@ router.get("/:id/overtime", auth_1.verifyJWT, async (req, res) => {
                 return;
             }
         }
-        const now = new Date();
-        const [endH, endM] = schedule.scheduled_end_time.toString().split(":").map(Number);
-        const scheduledEnd = new Date(now);
-        scheduledEnd.setHours(endH, endM, 0, 0);
-        // Handle cross-midnight schedules
-        const [startH] = schedule.scheduled_start_time.toString().split(":").map(Number);
-        if (endH < startH) {
-            scheduledEnd.setDate(scheduledEnd.getDate() + 1);
-        }
+        // Get any active session (not only today’s)
         const { rows: sessRows } = await pool_1.db.query(`SELECT * FROM attendance_sessions
-       WHERE user_id=$1 AND work_date=CURRENT_DATE AND status='active'`, [req.params.id]);
+       WHERE user_id=$1 AND status='active'`, [req.params.id]);
         const session = sessRows[0];
         if (!session) {
             res.json({ isOvertime: false });
             return;
+        }
+        const now = new Date();
+        const [endH, endM] = schedule.scheduled_end_time.toString().split(":").map(Number);
+        const [startH] = schedule.scheduled_start_time.toString().split(":").map(Number);
+        // Use the session’s clock‑in date as the reference day
+        const clockInDate = new Date(session.clock_in_time);
+        const scheduledEnd = new Date(clockInDate);
+        scheduledEnd.setHours(endH, endM, 0, 0);
+        // If schedule crosses midnight, the end is on the next calendar day
+        if (endH < startH) {
+            scheduledEnd.setDate(scheduledEnd.getDate() + 1);
         }
         const isOvertime = now > scheduledEnd;
         const overtimeMins = isOvertime
@@ -84,6 +86,7 @@ router.get("/:id/overtime", auth_1.verifyJWT, async (req, res) => {
         res.json({ isOvertime, overtimeMins, scheduledEnd: scheduledEnd.toISOString() });
     }
     catch (err) {
+        console.error(err);
         res.status(500).json({ error: "Server error" });
     }
 });

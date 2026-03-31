@@ -33,29 +33,75 @@ router.post("/employees", async (req, res) => {
             return;
         }
         const hash = bcryptjs_1.default.hashSync(password, 10);
-        let finalUserId = userId;
+        // Auto-generate user_id if not provided
+        let finalUserId = userId?.trim() || null;
         if (!finalUserId) {
-            const { rows: lastUser } = await pool_1.db.query("SELECT user_id FROM users WHERE user_id ~ '^[0-9]+$' ORDER BY user_id::int DESC LIMIT 1");
-            const lastId = lastUser[0] ? parseInt(lastUser[0].user_id) : 1000;
-            finalUserId = String(lastId + 1).padStart(4, '0');
+            // Find highest existing auto-numeric ID or any ID pattern
+            const { rows: lastUser } = await pool_1.db.query(`SELECT user_id FROM users
+         WHERE user_id IS NOT NULL
+         ORDER BY created_at DESC
+         LIMIT 20`);
+            // Find highest numeric suffix across all IDs
+            let maxNum = 0;
+            for (const row of lastUser) {
+                const match = (row.user_id || "").match(/(\d+)$/);
+                if (match) {
+                    const n = parseInt(match[1]);
+                    if (n > maxNum)
+                        maxNum = n;
+                }
+            }
+            if (maxNum === 0)
+                maxNum = 0;
+            // Generate next ID like "EM01", "EM02", etc.
+            finalUserId = `EM${String(maxNum + 1).padStart(2, "0")}`;
+            // Make sure it is unique
+            let attempts = 0;
+            while (attempts < 20) {
+                const { rows: exists } = await pool_1.db.query("SELECT id FROM users WHERE user_id = $1", [finalUserId]);
+                if (exists.length === 0)
+                    break;
+                maxNum++;
+                finalUserId = `EM${String(maxNum + 1).padStart(2, "0")}`;
+                attempts++;
+            }
         }
-        const finalTimezone = timezone && ['America/New_York', 'Asia/Kolkata'].includes(timezone) ? timezone : 'America/New_York';
+        // Validate timezone
+        const allowedTimezones = ["America/New_York", "Asia/Kolkata", "UTC"];
+        const finalTimezone = timezone && allowedTimezones.includes(timezone)
+            ? timezone
+            : "America/New_York";
+        // Insert user
         const { rows } = await pool_1.db.query(`INSERT INTO users (name, full_name, email, password_hash, role, user_id, timezone)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`, [name, name, email || null, hash, role || "employee", finalUserId, finalTimezone]);
         const user = rows[0];
+        // Insert employee profile
         await pool_1.db.query(`INSERT INTO employee_profiles (user_id, employee_code, department, designation, phone, joined_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`, [user.id, employeeCode || null, department || null, designation || null, phone || null, joinedAt || null]);
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (user_id) DO UPDATE SET
+         employee_code = EXCLUDED.employee_code,
+         department = EXCLUDED.department,
+         designation = EXCLUDED.designation,
+         phone = EXCLUDED.phone,
+         joined_at = EXCLUDED.joined_at`, [user.id, employeeCode || null, department || null, designation || null, phone || null, joinedAt || null]);
+        // Create default schedule
         await pool_1.db.query("INSERT INTO employee_schedules (employee_id) VALUES ($1) ON CONFLICT DO NOTHING", [user.id]);
+        // Assign to first available worksite
         const { rows: worksites } = await pool_1.db.query("SELECT id FROM worksites LIMIT 1");
         if (worksites.length > 0) {
             await pool_1.db.query(`INSERT INTO employee_worksites (employee_id, worksite_id, is_default, assigned_by)
          VALUES ($1, $2, true, $3) ON CONFLICT DO NOTHING`, [user.id, worksites[0].id, req.user.id]);
         }
-        res.status(201).json({ message: "Employee created", id: user.id, userId: finalUserId });
+        res.status(201).json({
+            message: "Employee created",
+            id: user.id,
+            userId: finalUserId,
+            name: user.name,
+        });
     }
     catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Server error" });
+        console.error("Create employee error:", err);
+        res.status(500).json({ error: err.message || "Server error" });
     }
 });
 // PUT update employee details (including user_id)

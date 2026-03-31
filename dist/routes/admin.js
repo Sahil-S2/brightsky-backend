@@ -74,24 +74,32 @@ router.post("/employees", async (req, res) => {
             : "America/New_York";
         // Insert user
         const { rows } = await pool_1.db.query(`INSERT INTO users (name, full_name, email, password_hash, role, user_id, timezone)
-   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`, [name, name, safeEmail, hash, role || "employee", finalUserId, finalTimezone]);
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`, [name, name, safeEmail, hash, role || "employee", finalUserId, finalTimezone]);
         const user = rows[0];
-        // Insert employee profile
-        await pool_1.db.query(`INSERT INTO employee_profiles (user_id, employee_code, department, designation, phone, joined_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (user_id) DO UPDATE SET
-         employee_code = EXCLUDED.employee_code,
-         department = EXCLUDED.department,
-         designation = EXCLUDED.designation,
-         phone = EXCLUDED.phone,
-         joined_at = EXCLUDED.joined_at`, [user.id, employeeCode || null, department || null, designation || null, phone || null, joinedAt || null]);
-        // Create default schedule
-        await pool_1.db.query("INSERT INTO employee_schedules (employee_id) VALUES ($1) ON CONFLICT DO NOTHING", [user.id]);
-        // Assign to first available worksite
+        // ---- Insert/Update employee profile (avoid ON CONFLICT) ----
+        const { rows: profileExists } = await pool_1.db.query("SELECT 1 FROM employee_profiles WHERE user_id = $1", [user.id]);
+        if (profileExists.length === 0) {
+            await pool_1.db.query(`INSERT INTO employee_profiles (user_id, employee_code, department, designation, phone, joined_at)
+         VALUES ($1, $2, $3, $4, $5, $6)`, [user.id, employeeCode || null, department || null, designation || null, phone || null, joinedAt || null]);
+        }
+        else {
+            await pool_1.db.query(`UPDATE employee_profiles
+         SET employee_code = $2, department = $3, designation = $4, phone = $5, joined_at = $6
+         WHERE user_id = $1`, [user.id, employeeCode || null, department || null, designation || null, phone || null, joinedAt || null]);
+        }
+        // ---- Create default schedule (avoid ON CONFLICT) ----
+        const { rows: scheduleExists } = await pool_1.db.query("SELECT 1 FROM employee_schedules WHERE employee_id = $1", [user.id]);
+        if (scheduleExists.length === 0) {
+            await pool_1.db.query("INSERT INTO employee_schedules (employee_id) VALUES ($1)", [user.id]);
+        }
+        // ---- Assign to first available worksite (avoid ON CONFLICT) ----
         const { rows: worksites } = await pool_1.db.query("SELECT id FROM worksites LIMIT 1");
         if (worksites.length > 0) {
-            await pool_1.db.query(`INSERT INTO employee_worksites (employee_id, worksite_id, is_default, assigned_by)
-         VALUES ($1, $2, true, $3) ON CONFLICT DO NOTHING`, [user.id, worksites[0].id, req.user.id]);
+            const { rows: assignmentExists } = await pool_1.db.query("SELECT 1 FROM employee_worksites WHERE employee_id = $1 AND worksite_id = $2", [user.id, worksites[0].id]);
+            if (assignmentExists.length === 0) {
+                await pool_1.db.query(`INSERT INTO employee_worksites (employee_id, worksite_id, is_default, assigned_by)
+           VALUES ($1, $2, true, $3)`, [user.id, worksites[0].id, req.user.id]);
+            }
         }
         res.status(201).json({
             message: "Employee created",

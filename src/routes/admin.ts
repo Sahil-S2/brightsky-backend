@@ -38,6 +38,7 @@ router.post("/employees", async (req: AuthRequest, res: Response) => {
     }
 
     const hash = bcrypt.hashSync(password, 10);
+    const safeEmail = (email && email.trim().length > 0) ? email.trim() : null;
 
     // Auto-generate user_id if not provided
     let finalUserId = userId?.trim() || null;
@@ -82,10 +83,10 @@ router.post("/employees", async (req: AuthRequest, res: Response) => {
 
     // Insert user
     const { rows } = await db.query(
-      `INSERT INTO users (name, full_name, email, password_hash, role, user_id, timezone)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [name, name, email || null, hash, role || "employee", finalUserId, finalTimezone]
-    );
+  `INSERT INTO users (name, full_name, email, password_hash, role, user_id, timezone)
+   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+  [name, name, safeEmail, hash, role || "employee", finalUserId, finalTimezone]
+);
     const user = rows[0];
 
     // Insert employee profile

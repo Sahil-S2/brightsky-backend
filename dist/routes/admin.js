@@ -33,6 +33,7 @@ router.post("/employees", async (req, res) => {
             return;
         }
         const hash = bcryptjs_1.default.hashSync(password, 10);
+        const safeEmail = (email && email.trim().length > 0) ? email.trim() : null;
         // Auto-generate user_id if not provided
         let finalUserId = userId?.trim() || null;
         if (!finalUserId) {
@@ -73,7 +74,7 @@ router.post("/employees", async (req, res) => {
             : "America/New_York";
         // Insert user
         const { rows } = await pool_1.db.query(`INSERT INTO users (name, full_name, email, password_hash, role, user_id, timezone)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`, [name, name, email || null, hash, role || "employee", finalUserId, finalTimezone]);
+   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`, [name, name, safeEmail, hash, role || "employee", finalUserId, finalTimezone]);
         const user = rows[0];
         // Insert employee profile
         await pool_1.db.query(`INSERT INTO employee_profiles (user_id, employee_code, department, designation, phone, joined_at)

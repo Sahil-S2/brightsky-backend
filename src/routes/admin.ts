@@ -7,7 +7,7 @@ const router = Router();
 
 router.use(verifyJWT, requireRole("admin", "manager"));
 
-// GET all employees (with profiles)
+// GET all employees
 router.get("/employees", async (req: AuthRequest, res: Response) => {
   try {
     const { rows } = await db.query(
@@ -24,7 +24,7 @@ router.get("/employees", async (req: AuthRequest, res: Response) => {
   }
 });
 
-// POST create employee (only one, remove duplicate)
+// POST create employee
 router.post("/employees", async (req: AuthRequest, res: Response) => {
   try {
     const { name, email, password, role, department, designation, phone, employeeCode, joinedAt, userId, timezone } = req.body;
@@ -47,8 +47,8 @@ router.post("/employees", async (req: AuthRequest, res: Response) => {
 
     const { rows } = await db.query(
       `INSERT INTO users (name, full_name, email, password_hash, role, user_id, timezone)
-       VALUES ($1, $1, $2, $3, $4, $5, $6) RETURNING *`,
-      [name, email || null, hash, role || "employee", finalUserId, finalTimezone]
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [name, name, email || null, hash, role || "employee", finalUserId, finalTimezone]
     );
     const user = rows[0];
     await db.query(
@@ -78,6 +78,47 @@ router.post("/employees", async (req: AuthRequest, res: Response) => {
   }
 });
 
+// PUT update employee details (name, email, role, profile fields)
+router.put("/employees/:id", async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { name, email, role, department, designation, employeeCode, phone, joinedAt } = req.body;
+
+    await db.query(
+      `UPDATE users SET name = $1, full_name = $1, email = $2, role = $3 WHERE id = $4`,
+      [name, email || null, role || "employee", id]
+    );
+    await db.query(
+      `UPDATE employee_profiles
+       SET employee_code = $1, department = $2, designation = $3, phone = $4, joined_at = $5
+       WHERE user_id = $6`,
+      [employeeCode || null, department || null, designation || null, phone || null, joinedAt || null, id]
+    );
+    res.json({ message: "Employee updated" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// PUT change employee password
+router.put("/employees/:id/password", async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+    if (!newPassword || newPassword.length < 4) {
+      res.status(400).json({ error: "Password must be at least 4 characters" });
+      return;
+    }
+    const hash = bcrypt.hashSync(newPassword, 10);
+    await db.query("UPDATE users SET password_hash = $1 WHERE id = $2", [hash, id]);
+    res.json({ message: "Password updated" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // DELETE deactivate employee
 router.delete("/employees/:id", async (req: AuthRequest, res: Response) => {
   try {
@@ -87,6 +128,8 @@ router.delete("/employees/:id", async (req: AuthRequest, res: Response) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
+// ... rest of routes (attendance, reports, timezone) unchanged ...
 
 // GET attendance records (admin view)
 router.get("/attendance", async (req: AuthRequest, res: Response) => {

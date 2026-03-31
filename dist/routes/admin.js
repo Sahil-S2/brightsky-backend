@@ -12,7 +12,7 @@ router.use(auth_1.verifyJWT, (0, auth_1.requireRole)("admin", "manager"));
 // GET all employees
 router.get("/employees", async (req, res) => {
     try {
-        const { rows } = await pool_1.db.query(`SELECT u.id, u.name, u.email, u.role, u.status, u.created_at, u.timezone,
+        const { rows } = await pool_1.db.query(`SELECT u.id, u.name, u.email, u.role, u.status, u.created_at, u.timezone, u.user_id,
               ep.employee_code, ep.department, ep.designation, ep.phone, ep.joined_at
        FROM users u
        LEFT JOIN employee_profiles ep ON ep.user_id = u.id
@@ -58,12 +58,20 @@ router.post("/employees", async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
-// PUT update employee details (name, email, role, profile fields)
+// PUT update employee details (including user_id)
 router.put("/employees/:id", async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, email, role, department, designation, employeeCode, phone, joinedAt } = req.body;
-        await pool_1.db.query(`UPDATE users SET name = $1, full_name = $1, email = $2, role = $3 WHERE id = $4`, [name, email || null, role || "employee", id]);
+        const { name, email, role, department, designation, employeeCode, phone, joinedAt, userId } = req.body;
+        // Check if userId is unique if changed
+        if (userId) {
+            const { rows: existing } = await pool_1.db.query("SELECT id FROM users WHERE user_id = $1 AND id != $2", [userId, id]);
+            if (existing.length > 0) {
+                res.status(400).json({ error: "User ID already taken" });
+                return;
+            }
+        }
+        await pool_1.db.query(`UPDATE users SET name = $1, full_name = $1, email = $2, role = $3, user_id = $4 WHERE id = $5`, [name, email || null, role || "employee", userId || null, id]);
         await pool_1.db.query(`UPDATE employee_profiles
        SET employee_code = $1, department = $2, designation = $3, phone = $4, joined_at = $5
        WHERE user_id = $6`, [employeeCode || null, department || null, designation || null, phone || null, joinedAt || null, id]);
@@ -102,7 +110,6 @@ router.delete("/employees/:id", async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
-// ... rest of routes (attendance, reports, timezone) unchanged ...
 // GET attendance records (admin view)
 router.get("/attendance", async (req, res) => {
     try {

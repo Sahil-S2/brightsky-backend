@@ -63,32 +63,45 @@ export function computeRegularOvertime(
   const [startHour, startMin] = schedule.start.split(':').map(Number);
   const [endHour, endMin] = schedule.end.split(':').map(Number);
 
-  // Scheduled start and end on the same day as clock‑in
+  // Validate schedule (start must be valid, end must be valid and not equal to start)
+  if (isNaN(startHour) || isNaN(endHour) || (startHour === endHour && startMin === endMin && !schedule.crossesMidnight)) {
+    // Invalid schedule – fallback to global (or treat all as regular)
+    const totalWorked = Math.max(0, Math.round((end.getTime() - clockIn.getTime()) / 60000) - breakMinutes);
+    return { regular: totalWorked, overtime: 0 };
+  }
+
   const scheduledStart = new Date(clockIn);
   scheduledStart.setHours(startHour, startMin, 0, 0);
   const scheduledEnd = new Date(clockIn);
   scheduledEnd.setHours(endHour, endMin, 0, 0);
 
-  // If schedule crosses midnight, adjust scheduled end
   if (schedule.crossesMidnight) {
     scheduledEnd.setDate(scheduledEnd.getDate() + 1);
+    // If clock‑out is before midnight, we need to cap overlap to midnight
+    const midnight = new Date(clockIn);
+    midnight.setHours(24, 0, 0, 0);
+    const effectiveEnd = end < midnight ? end : midnight;
+    const overlapStart = new Date(Math.max(clockIn.getTime(), scheduledStart.getTime()));
+    const overlapEnd = new Date(Math.min(effectiveEnd.getTime(), scheduledEnd.getTime()));
+    let regularMinutes = 0;
+    if (overlapEnd > overlapStart) {
+      regularMinutes = Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 60000);
+    }
+    const totalWorked = Math.max(0, Math.round((end.getTime() - clockIn.getTime()) / 60000) - breakMinutes);
+    const overtimeMinutes = Math.max(0, totalWorked - regularMinutes);
+    return { regular: regularMinutes, overtime: overtimeMinutes };
+  } else {
+    // Normal shift (same day)
+    const overlapStart = new Date(Math.max(clockIn.getTime(), scheduledStart.getTime()));
+    const overlapEnd = new Date(Math.min(end.getTime(), scheduledEnd.getTime()));
+    let regularMinutes = 0;
+    if (overlapEnd > overlapStart) {
+      regularMinutes = Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 60000);
+    }
+    const totalWorked = Math.max(0, Math.round((end.getTime() - clockIn.getTime()) / 60000) - breakMinutes);
+    const overtimeMinutes = Math.max(0, totalWorked - regularMinutes);
+    return { regular: regularMinutes, overtime: overtimeMinutes };
   }
-
-  // Overlap of actual work with scheduled hours
-  const overlapStart = new Date(Math.max(clockIn.getTime(), scheduledStart.getTime()));
-  const overlapEnd = new Date(Math.min(end.getTime(), scheduledEnd.getTime()));
-  let regularMinutes = 0;
-  if (overlapEnd > overlapStart) {
-    regularMinutes = Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 60000);
-  }
-
-  // Total worked minutes = (clock_out - clock_in) - break_minutes
-  const totalWorked = Math.max(0,
-    Math.round((end.getTime() - clockIn.getTime()) / 60000) - breakMinutes
-  );
-  const overtimeMinutes = Math.max(0, totalWorked - regularMinutes);
-
-  return { regular: regularMinutes, overtime: overtimeMinutes };
 }
 
 export async function getEmployeeStatus(userId: string): Promise<string> {

@@ -200,48 +200,12 @@ router.get("/reports/summary", async (req, res) => {
          ep.department,
          ep.designation,
          COUNT(DISTINCT s.id) as total_sessions,
-         COALESCE(SUM(
-           CASE
-             WHEN s.status = 'completed' THEN s.worked_minutes
-             WHEN s.status = 'active' AND s.clock_in_time IS NOT NULL THEN
-               GREATEST(0,
-                 ROUND(EXTRACT(EPOCH FROM (NOW() - s.clock_in_time)) / 60)::int
-                 - COALESCE(s.break_minutes, 0)
-               )
-             ELSE 0
-           END
-         ), 0) as total_minutes,
-         COALESCE(AVG(
-           CASE
-             WHEN s.status = 'completed' THEN s.worked_minutes
-             WHEN s.status = 'active' AND s.clock_in_time IS NOT NULL THEN
-               GREATEST(0,
-                 ROUND(EXTRACT(EPOCH FROM (NOW() - s.clock_in_time)) / 60)::int
-                 - COALESCE(s.break_minutes, 0)
-               )
-             ELSE 0
-           END
-         ), 0) as avg_daily_minutes,
-         COALESCE(SUM(
-           CASE
-             WHEN s.work_date >= CURRENT_DATE - 6 THEN
-               CASE
-                 WHEN s.status = 'completed' THEN s.worked_minutes
-                 WHEN s.status = 'active' AND s.clock_in_time IS NOT NULL THEN
-                   GREATEST(0,
-                     ROUND(EXTRACT(EPOCH FROM (NOW() - s.clock_in_time)) / 60)::int
-                     - COALESCE(s.break_minutes, 0)
-                   )
-                 ELSE 0
-               END
-             ELSE 0
-           END
-         ), 0) as week_minutes,
+         COALESCE(SUM(s.worked_minutes), 0) as total_minutes,
+         COALESCE(SUM(s.regular_minutes), 0) as total_regular_minutes,
+         COALESCE(SUM(s.overtime_minutes), 0) as total_overtime_minutes,
+         COALESCE(AVG(s.worked_minutes), 0) as avg_daily_minutes,
+         COALESCE(SUM(CASE WHEN s.work_date >= CURRENT_DATE - 6 THEN s.worked_minutes ELSE 0 END), 0) as week_minutes,
          COUNT(CASE WHEN p.punch_type = 'break_start' THEN 1 END) as total_breaks,
-         ROUND(
-           COUNT(CASE WHEN p.punch_type = 'break_start' THEN 1 END)::numeric /
-           NULLIF(COUNT(DISTINCT s.id), 0), 1
-         ) as avg_breaks_per_day,
          COALESCE(SUM(s.personal_break_minutes), 0) as personal_break_minutes,
          COALESCE(SUM(s.work_break_minutes), 0) as work_break_minutes
        FROM users u

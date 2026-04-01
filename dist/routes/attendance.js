@@ -313,6 +313,7 @@ router.get("/session/:sessionId/punches", auth_1.verifyJWT, async (req, res) => 
         res.status(500).json({ error: "Server error" });
     }
 });
+// In routes/employees.ts (or wherever the route is)
 router.get("/:id/overtime", auth_1.verifyJWT, async (req, res) => {
     try {
         const { id } = req.params;

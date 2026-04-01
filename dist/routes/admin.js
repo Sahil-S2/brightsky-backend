@@ -7,6 +7,7 @@ const express_1 = require("express");
 const auth_1 = require("../middleware/auth");
 const pool_1 = require("../db/pool");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const attendance_1 = require("../services/attendance");
 const router = (0, express_1.Router)();
 router.use(auth_1.verifyJWT, (0, auth_1.requireRole)("admin", "manager"));
 // GET all employees
@@ -270,6 +271,19 @@ router.put("/users/:id/timezone", async (req, res) => {
         res.json({ message: "Timezone updated" });
     }
     catch (err) {
+        res.status(500).json({ error: "Server error" });
+    }
+});
+router.post("/recompute-sessions", auth_1.verifyJWT, (0, auth_1.requireRole)("admin"), async (req, res) => {
+    try {
+        const { rows } = await pool_1.db.query("SELECT id FROM attendance_sessions WHERE status = 'completed'");
+        for (const row of rows) {
+            await (0, attendance_1.updateSessionSummary)(row.id);
+        }
+        res.json({ message: `Recomputed ${rows.length} sessions.` });
+    }
+    catch (err) {
+        console.error(err);
         res.status(500).json({ error: "Server error" });
     }
 });

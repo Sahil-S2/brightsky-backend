@@ -371,4 +371,20 @@ router.get(
   }
 );
 
+router.get("/:id/overtime", verifyJWT, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const today = new Date().toISOString().slice(0, 10);
+    const { rows } = await db.query(
+      `SELECT overtime_minutes FROM attendance_sessions
+       WHERE user_id = $1 AND work_date = $2 AND status = 'active'`,
+      [id, today]
+    );
+    const overtimeMins = rows[0]?.overtime_minutes || 0;
+    res.json({ isOvertime: overtimeMins > 0, overtimeMins });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 export default router;

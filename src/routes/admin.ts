@@ -3,6 +3,7 @@ import { verifyJWT, requireRole, AuthRequest } from "../middleware/auth";
 import { db } from "../db/pool";
 import bcrypt from "bcryptjs";
 import { computeRegularOvertime, getEffectiveSchedule } from "../services/attendance";
+import { updateSessionSummary } from "../services/attendance";
 
 const router = Router();
 
@@ -324,6 +325,19 @@ router.put("/users/:id/timezone", async (req: AuthRequest, res: Response) => {
     await db.query("UPDATE users SET timezone = $1 WHERE id = $2", [timezone, req.params.id]);
     res.json({ message: "Timezone updated" });
   } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+router.post("/recompute-sessions", verifyJWT, requireRole("admin"), async (req: AuthRequest, res: Response) => {
+  try {
+    const { rows } = await db.query("SELECT id FROM attendance_sessions WHERE status = 'completed'");
+    for (const row of rows) {
+      await updateSessionSummary(row.id);
+    }
+    res.json({ message: `Recomputed ${rows.length} sessions.` });
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Server error" });
   }
 });

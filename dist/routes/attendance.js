@@ -223,13 +223,15 @@ router.get("/me", auth_1.verifyJWT, async (req, res) => {
         const { rows: sessions } = await pool_1.db.query(`SELECT * FROM attendance_sessions
        WHERE user_id = $1
        ORDER BY work_date DESC LIMIT 30`, [req.user.id]);
-        // Get the user's effective schedule (the same for all sessions unless date‑specific, but we use a single schedule)
+        // Get the user's effective schedule (same for all sessions unless date‑specific)
         const schedule = await (0, attendance_1.getEffectiveSchedule)(req.user.id);
+        const userTz = req.user.timezone || 'America/New_York'; // fallback if missing
         // Enhance each session with regular & overtime minutes
         const enhancedSessions = sessions.map((session) => {
             let regular = 0, overtime = 0;
             if (session.clock_in_time) {
-                const { regular: reg, overtime: ov } = (0, attendance_1.computeRegularOvertime)(new Date(session.clock_in_time), session.clock_out_time ? new Date(session.clock_out_time) : null, session.break_minutes || 0, schedule);
+                const { regular: reg, overtime: ov } = (0, attendance_1.computeRegularOvertime)(new Date(session.clock_in_time), session.clock_out_time ? new Date(session.clock_out_time) : null, session.break_minutes || 0, schedule, userTz // 👈 pass the timezone
+                );
                 regular = reg;
                 overtime = ov;
             }

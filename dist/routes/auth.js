@@ -47,7 +47,8 @@ router.post("/login", async (req, res) => {
             console.error("Auto clock-out failed:", err);
             // Don't block login; just log the error
         }
-        const accessToken = jsonwebtoken_1.default.sign({ id: user.id, role: user.role, name: user.full_name || user.name }, process.env.JWT_SECRET, { expiresIn: "8h" });
+        // routes/auth.ts – inside login route
+        const accessToken = jsonwebtoken_1.default.sign({ id: user.id, role: user.role, name: user.full_name || user.name, timezone: user.timezone }, process.env.JWT_SECRET, { expiresIn: "8h" });
         const refreshToken = jsonwebtoken_1.default.sign({ id: user.id }, process.env.REFRESH_SECRET, { expiresIn: "30d" });
         res.cookie("refreshToken", refreshToken, {
             httpOnly: true,
@@ -86,7 +87,7 @@ router.post("/refresh", async (req, res) => {
             res.status(401).json({ error: "User not found" });
             return;
         }
-        const accessToken = jsonwebtoken_1.default.sign({ id: user.id, role: user.role, name: user.full_name || user.name }, process.env.JWT_SECRET, { expiresIn: "8h" });
+        const accessToken = jsonwebtoken_1.default.sign({ id: user.id, role: user.role, name: user.full_name || user.name, timezone: user.timezone }, process.env.JWT_SECRET, { expiresIn: "8h" });
         res.json({ accessToken });
     }
     catch {

@@ -13,7 +13,12 @@ const verifyJWT = (req, res, next) => {
     }
     try {
         const decoded = jsonwebtoken_1.default.verify(token, process.env.JWT_SECRET);
-        req.user = decoded;
+        req.user = {
+            id: decoded.id,
+            role: decoded.role,
+            name: decoded.name,
+            timezone: decoded.timezone,
+        };
         next();
     }
     catch {

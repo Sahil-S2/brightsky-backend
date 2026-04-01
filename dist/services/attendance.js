@@ -11,6 +11,7 @@ exports.getLastPunch = getLastPunch;
 exports.getUserTimezone = getUserTimezone;
 exports.autoClockOutPreviousDay = autoClockOutPreviousDay;
 const pool_1 = require("../db/pool");
+const luxon_1 = require("luxon");
 const VALID_TRANSITIONS = {
     clocked_out: ["clock_in"],
     clocked_in: ["break_start", "clock_out"],
@@ -70,47 +71,44 @@ async function getEffectiveSchedule(userId) {
  * @param breakMinutes - total break minutes taken during the shift
  * @param schedule - the employee's schedule for that day
  */
-function computeRegularOvertime(clockIn, clockOut, breakMinutes, schedule) {
-    const end = clockOut || new Date();
+function computeRegularOvertime(clockIn, clockOut, breakMinutes, schedule, timezone) {
+    const clockInLocal = luxon_1.DateTime.fromJSDate(clockIn).setZone(timezone);
+    const endLocal = clockOut
+        ? luxon_1.DateTime.fromJSDate(clockOut).setZone(timezone)
+        : luxon_1.DateTime.now().setZone(timezone);
     const [startHour, startMin] = schedule.start.split(':').map(Number);
     const [endHour, endMin] = schedule.end.split(':').map(Number);
-    // Validate schedule (start must be valid, end must be valid and not equal to start)
+    // Validate schedule
     if (isNaN(startHour) || isNaN(endHour) || (startHour === endHour && startMin === endMin && !schedule.crossesMidnight)) {
-        // Invalid schedule – fallback to global (or treat all as regular)
-        const totalWorked = Math.max(0, Math.round((end.getTime() - clockIn.getTime()) / 60000) - breakMinutes);
+        const totalWorked = Math.max(0, endLocal.diff(clockInLocal, 'minutes').minutes - breakMinutes);
         return { regular: totalWorked, overtime: 0 };
     }
-    const scheduledStart = new Date(clockIn);
-    scheduledStart.setHours(startHour, startMin, 0, 0);
-    const scheduledEnd = new Date(clockIn);
-    scheduledEnd.setHours(endHour, endMin, 0, 0);
+    let scheduledStart = clockInLocal.set({ hour: startHour, minute: startMin, second: 0, millisecond: 0 });
+    let scheduledEnd = clockInLocal.set({ hour: endHour, minute: endMin, second: 0, millisecond: 0 });
     if (schedule.crossesMidnight) {
-        scheduledEnd.setDate(scheduledEnd.getDate() + 1);
-        // If clock‑out is before midnight, we need to cap overlap to midnight
-        const midnight = new Date(clockIn);
-        midnight.setHours(24, 0, 0, 0);
-        const effectiveEnd = end < midnight ? end : midnight;
-        const overlapStart = new Date(Math.max(clockIn.getTime(), scheduledStart.getTime()));
-        const overlapEnd = new Date(Math.min(effectiveEnd.getTime(), scheduledEnd.getTime()));
+        scheduledEnd = scheduledEnd.plus({ days: 1 });
+        const midnight = clockInLocal.set({ hour: 24, minute: 0, second: 0, millisecond: 0 });
+        const effectiveEnd = endLocal < midnight ? endLocal : midnight;
+        const overlapStart = scheduledStart > clockInLocal ? scheduledStart : clockInLocal;
+        const overlapEnd = effectiveEnd < scheduledEnd ? effectiveEnd : scheduledEnd;
         let regularMinutes = 0;
         if (overlapEnd > overlapStart) {
-            regularMinutes = Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 60000);
+            regularMinutes = overlapEnd.diff(overlapStart, 'minutes').minutes;
         }
-        const totalWorked = Math.max(0, Math.round((end.getTime() - clockIn.getTime()) / 60000) - breakMinutes);
+        const totalWorked = endLocal.diff(clockInLocal, 'minutes').minutes - breakMinutes;
         const overtimeMinutes = Math.max(0, totalWorked - regularMinutes);
-        return { regular: regularMinutes, overtime: overtimeMinutes };
+        return { regular: Math.round(regularMinutes), overtime: Math.round(overtimeMinutes) };
     }
     else {
-        // Normal shift (same day)
-        const overlapStart = new Date(Math.max(clockIn.getTime(), scheduledStart.getTime()));
-        const overlapEnd = new Date(Math.min(end.getTime(), scheduledEnd.getTime()));
+        const overlapStart = scheduledStart > clockInLocal ? scheduledStart : clockInLocal;
+        const overlapEnd = endLocal < scheduledEnd ? endLocal : scheduledEnd;
         let regularMinutes = 0;
         if (overlapEnd > overlapStart) {
-            regularMinutes = Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 60000);
+            regularMinutes = overlapEnd.diff(overlapStart, 'minutes').minutes;
         }
-        const totalWorked = Math.max(0, Math.round((end.getTime() - clockIn.getTime()) / 60000) - breakMinutes);
+        const totalWorked = endLocal.diff(clockInLocal, 'minutes').minutes - breakMinutes;
         const overtimeMinutes = Math.max(0, totalWorked - regularMinutes);
-        return { regular: regularMinutes, overtime: overtimeMinutes };
+        return { regular: Math.round(regularMinutes), overtime: Math.round(overtimeMinutes) };
     }
 }
 async function getEmployeeStatus(userId) {
@@ -171,6 +169,8 @@ async function updateSessionSummary(sessionId) {
     if (!sessionRows.length)
         return;
     const userId = sessionRows[0].user_id;
+    // Fetch user's timezone
+    const userTz = await getUserTimezone(userId);
     // Fetch all punches in order
     const { rows: punches } = await pool_1.db.query(`SELECT * FROM punch_records WHERE session_id = $1 ORDER BY punch_time ASC`, [sessionId]);
     let clockInTime = null;
@@ -233,7 +233,8 @@ async function updateSessionSummary(sessionId) {
     let isOvertime = false;
     if (clockInTime) {
         const schedule = await getEffectiveSchedule(userId);
-        const { regular, overtime } = computeRegularOvertime(clockInTime, clockOutTime, totalBreakMinutes, schedule);
+        const { regular, overtime } = computeRegularOvertime(clockInTime, clockOutTime, totalBreakMinutes, schedule, userTz // 👈 pass the timezone
+        );
         regularMinutes = regular;
         overtimeMinutes = overtime;
         isOvertime = overtimeMinutes > 0;

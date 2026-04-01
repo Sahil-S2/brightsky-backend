@@ -47,11 +47,12 @@ router.post("/login", async (req: Request, res: Response) => {
       // Don't block login; just log the error
     }
 
-    const accessToken = jwt.sign(
-      { id: user.id, role: user.role, name: user.full_name || user.name },
-      process.env.JWT_SECRET!,
-      { expiresIn: "8h" }
-    );
+    // routes/auth.ts – inside login route
+const accessToken = jwt.sign(
+  { id: user.id, role: user.role, name: user.full_name || user.name, timezone: user.timezone },
+  process.env.JWT_SECRET!,
+  { expiresIn: "8h" }
+);
 
     const refreshToken = jwt.sign(
       { id: user.id },
@@ -94,10 +95,10 @@ router.post("/refresh", async (req: Request, res: Response) => {
     const user = rows[0];
     if (!user) { res.status(401).json({ error: "User not found" }); return; }
     const accessToken = jwt.sign(
-      { id: user.id, role: user.role, name: user.full_name || user.name },
-      process.env.JWT_SECRET!,
-      { expiresIn: "8h" }
-    );
+  { id: user.id, role: user.role, name: user.full_name || user.name, timezone: user.timezone },
+  process.env.JWT_SECRET!,
+  { expiresIn: "8h" }
+);
     res.json({ accessToken });
   } catch {
     res.status(401).json({ error: "Invalid refresh token" });

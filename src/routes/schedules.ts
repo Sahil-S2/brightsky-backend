@@ -4,6 +4,7 @@ import { db } from "../db/pool";
 import { DateTime } from 'luxon';
 import { getUserTimezone } from "../services/attendance";
 
+
 const router = Router();
 
 router.get("/:id/schedule", verifyJWT, async (req: AuthRequest, res: Response) => {
@@ -57,17 +58,35 @@ router.put("/:id/schedule", verifyJWT, requireRole("admin","manager"), async (re
 // Check overtime for a session
 router.get("/:id/overtime", verifyJWT, async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.params.id as string; // cast to string
+    const userId = req.params.id as string; // ensure it's a string
 
-    // Get schedule (employee or global)
+    // First check if there's an active session today
+    const today = new Date().toISOString().slice(0, 10);
+    const { rows: activeRows } = await db.query(
+      `SELECT overtime_minutes FROM attendance_sessions
+       WHERE user_id = $1 AND work_date = $2 AND status = 'active'`,
+      [userId, today]
+    );
+
+    if (activeRows.length > 0) {
+      const overtimeMins = activeRows[0].overtime_minutes || 0;
+      res.json({ isOvertime: overtimeMins > 0, overtimeMins });
+      return;
+    }
+
+    // Fallback to schedule‑based calculation
+    const userTz = await getUserTimezone(userId);
+    const now = DateTime.now().setZone(userTz);
+
+    // Fetch employee schedule (or global fallback)
     const { rows: schedRows } = await db.query(
-      "SELECT * FROM employee_schedules WHERE employee_id=$1",
+      "SELECT * FROM employee_schedules WHERE employee_id = $1",
       [userId]
     );
     let schedule = schedRows[0];
     if (!schedule) {
       const { rows: settingsRows } = await db.query(
-        "SELECT working_hours_start, working_hours_end FROM site_settings WHERE id=1"
+        "SELECT working_hours_start, working_hours_end FROM site_settings WHERE id = 1"
       );
       if (settingsRows.length) {
         schedule = {
@@ -75,41 +94,22 @@ router.get("/:id/overtime", verifyJWT, async (req: AuthRequest, res: Response) =
           scheduled_end_time: settingsRows[0].working_hours_end,
         };
       } else {
-        res.json({ isOvertime: false });
+        res.json({ isOvertime: false, overtimeMins: 0 });
         return;
       }
     }
 
-    // Get any active session
-    const { rows: sessRows } = await db.query(
-      `SELECT * FROM attendance_sessions
-       WHERE user_id=$1 AND status='active'`,
-      [userId]
-    );
-    const session = sessRows[0];
-    if (!session) {   // <-- fixed: check for missing session
-      res.json({ isOvertime: false });
-      return;
+    const [startHour, startMin] = schedule.scheduled_start_time.split(':').map(Number);
+    const [endHour, endMin] = schedule.scheduled_end_time.split(':').map(Number);
+    let scheduledEnd = now.set({ hour: endHour, minute: endMin, second: 0, millisecond: 0 });
+    if (endHour < startHour) {
+      scheduledEnd = scheduledEnd.plus({ days: 1 });
     }
-
-    const userTz = await getUserTimezone(userId);
-    const clockInDateTime = DateTime.fromJSDate(new Date(session.clock_in_time), { zone: userTz });
-    const now = DateTime.now().setZone(userTz);
-
-    const [startH] = schedule.scheduled_start_time.toString().split(":").map(Number);
-    const [endH, endM] = schedule.scheduled_end_time.toString().split(":").map(Number);
-
-    let scheduledEnd = clockInDateTime.set({ hour: endH, minute: endM, second: 0, millisecond: 0 });
-    if (endH < startH) {
-      scheduledEnd = scheduledEnd.plus({ days: 1 }); // <-- fixed: use .plus()
-    }
-
     const isOvertime = now > scheduledEnd;
     const overtimeMins = isOvertime
       ? Math.round(now.diff(scheduledEnd, 'minutes').minutes)
       : 0;
-
-    res.json({ isOvertime, overtimeMins, scheduledEnd: scheduledEnd.toISO() });
+    res.json({ isOvertime, overtimeMins });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });

@@ -242,8 +242,9 @@ router.get("/me", verifyJWT, async (req: AuthRequest, res: Response) => {
       [req.user!.id]
     );
 
-    // Get the user's effective schedule (the same for all sessions unless date‑specific, but we use a single schedule)
+    // Get the user's effective schedule (same for all sessions unless date‑specific)
     const schedule = await getEffectiveSchedule(req.user!.id);
+    const userTz = req.user!.timezone || 'America/New_York'; // fallback if missing
 
     // Enhance each session with regular & overtime minutes
     const enhancedSessions = sessions.map((session) => {
@@ -253,7 +254,8 @@ router.get("/me", verifyJWT, async (req: AuthRequest, res: Response) => {
           new Date(session.clock_in_time),
           session.clock_out_time ? new Date(session.clock_out_time) : null,
           session.break_minutes || 0,
-          schedule
+          schedule,
+          userTz   // 👈 pass the timezone
         );
         regular = reg;
         overtime = ov;

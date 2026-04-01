@@ -8,6 +8,7 @@ const auth_1 = require("../middleware/auth");
 const pool_1 = require("../db/pool");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const attendance_1 = require("../services/attendance");
+const attendance_2 = require("../services/attendance");
 const router = (0, express_1.Router)();
 router.use(auth_1.verifyJWT, (0, auth_1.requireRole)("admin", "manager"));
 // GET all employees
@@ -167,16 +168,16 @@ router.delete("/employees/:id", async (req, res) => {
     }
 });
 // GET attendance records (admin view)
+// GET attendance records (admin view)
 router.get("/attendance", auth_1.verifyJWT, (0, auth_1.requireRole)("admin", "manager"), async (req, res) => {
     try {
         const { user_id, date_from, date_to } = req.query;
-        // Select sessions and include the new columns
-        const { rows } = await pool_1.db.query(`SELECT 
+        // Fetch sessions with user info
+        const { rows: sessions } = await pool_1.db.query(`SELECT 
          s.id, s.user_id, s.work_date, s.clock_in_time, s.clock_out_time,
          s.break_minutes, s.personal_break_minutes, s.work_break_minutes,
-         s.worked_minutes, s.status, s.is_overtime, s.overtime_minutes,
-         s.regular_minutes,   -- 👈 new
-         u.name, ep.employee_code
+         s.worked_minutes, s.status, s.is_overtime,
+         u.name, u.timezone as user_timezone, ep.employee_code
        FROM attendance_sessions s
        JOIN users u ON u.id = s.user_id
        LEFT JOIN employee_profiles ep ON ep.user_id = s.user_id
@@ -184,7 +185,24 @@ router.get("/attendance", auth_1.verifyJWT, (0, auth_1.requireRole)("admin", "ma
          AND ($2::date IS NULL OR s.work_date >= $2)
          AND ($3::date IS NULL OR s.work_date <= $3)
        ORDER BY s.work_date DESC, u.name`, [user_id || null, date_from || null, date_to || null]);
-        res.json(rows);
+        // Enhance each session with regular/overtime minutes
+        const enhancedSessions = await Promise.all(sessions.map(async (session) => {
+            // If the session is completed and already has stored values, we could use them,
+            // but for consistency we recompute everything (the cost is acceptable for admin view).
+            if (!session.clock_in_time) {
+                return { ...session, regular_minutes: 0, overtime_minutes: 0 };
+            }
+            // Get employee schedule and timezone
+            const schedule = await (0, attendance_1.getEffectiveSchedule)(session.user_id);
+            const userTz = session.user_timezone || 'America/New_York';
+            const { regular, overtime } = (0, attendance_1.computeRegularOvertime)(new Date(session.clock_in_time), session.clock_out_time ? new Date(session.clock_out_time) : null, session.break_minutes || 0, schedule, userTz);
+            return {
+                ...session,
+                regular_minutes: regular,
+                overtime_minutes: overtime,
+            };
+        }));
+        res.json(enhancedSessions);
     }
     catch (err) {
         console.error("Error in /api/admin/attendance:", err);
@@ -242,7 +260,7 @@ router.post("/recompute-sessions", auth_1.verifyJWT, (0, auth_1.requireRole)("ad
     try {
         const { rows } = await pool_1.db.query("SELECT id FROM attendance_sessions WHERE status = 'completed'");
         for (const row of rows) {
-            await (0, attendance_1.updateSessionSummary)(row.id);
+            await (0, attendance_2.updateSessionSummary)(row.id);
         }
         res.json({ message: `Recomputed ${rows.length} sessions.` });
     }

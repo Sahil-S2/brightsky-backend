@@ -2,7 +2,7 @@ import { Router, Response } from "express";
 import { verifyJWT, requireRole, AuthRequest } from "../middleware/auth";
 import { db } from "../db/pool";
 import bcrypt from "bcryptjs";
-import { computeRegularOvertime, getEffectiveSchedule } from "../services/attendance";
+import { computeRegularOvertime, getEffectiveSchedule, getUserTimezone } from "../services/attendance";
 import { updateSessionSummary } from "../services/attendance";
 
 const router = Router();
@@ -215,18 +215,18 @@ router.delete("/employees/:id", async (req: AuthRequest, res: Response) => {
 });
 
 // GET attendance records (admin view)
+// GET attendance records (admin view)
 router.get("/attendance", verifyJWT, requireRole("admin", "manager"), async (req: AuthRequest, res: Response) => {
   try {
     const { user_id, date_from, date_to } = req.query;
 
-    // Select sessions and include the new columns
-    const { rows } = await db.query(
+    // Fetch sessions with user info
+    const { rows: sessions } = await db.query(
       `SELECT 
          s.id, s.user_id, s.work_date, s.clock_in_time, s.clock_out_time,
          s.break_minutes, s.personal_break_minutes, s.work_break_minutes,
-         s.worked_minutes, s.status, s.is_overtime, s.overtime_minutes,
-         s.regular_minutes,   -- 👈 new
-         u.name, ep.employee_code
+         s.worked_minutes, s.status, s.is_overtime,
+         u.name, u.timezone as user_timezone, ep.employee_code
        FROM attendance_sessions s
        JOIN users u ON u.id = s.user_id
        LEFT JOIN employee_profiles ep ON ep.user_id = s.user_id
@@ -237,7 +237,34 @@ router.get("/attendance", verifyJWT, requireRole("admin", "manager"), async (req
       [user_id || null, date_from || null, date_to || null]
     );
 
-    res.json(rows);
+    // Enhance each session with regular/overtime minutes
+    const enhancedSessions = await Promise.all(sessions.map(async (session) => {
+      // If the session is completed and already has stored values, we could use them,
+      // but for consistency we recompute everything (the cost is acceptable for admin view).
+      if (!session.clock_in_time) {
+        return { ...session, regular_minutes: 0, overtime_minutes: 0 };
+      }
+
+      // Get employee schedule and timezone
+      const schedule = await getEffectiveSchedule(session.user_id);
+      const userTz = session.user_timezone || 'America/New_York';
+
+      const { regular, overtime } = computeRegularOvertime(
+        new Date(session.clock_in_time),
+        session.clock_out_time ? new Date(session.clock_out_time) : null,
+        session.break_minutes || 0,
+        schedule,
+        userTz
+      );
+
+      return {
+        ...session,
+        regular_minutes: regular,
+        overtime_minutes: overtime,
+      };
+    }));
+
+    res.json(enhancedSessions);
   } catch (err) {
     console.error("Error in /api/admin/attendance:", err);
     res.status(500).json({ error: "Server error" });

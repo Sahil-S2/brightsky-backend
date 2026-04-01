@@ -126,6 +126,7 @@ router.get("/employee/:employeeId", async (req: AuthRequest, res: Response) => {
 });
 
 // Employee: mark task as complete or incomplete
+// Employee: mark task as complete or incomplete
 router.put("/:id/status", async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
@@ -134,20 +135,35 @@ router.put("/:id/status", async (req: AuthRequest, res: Response) => {
       res.status(400).json({ error: "Invalid status. Must be 'completed' or 'incomplete'" });
       return;
     }
-    let query = `UPDATE tasks SET status = $1, updated_at = NOW()`;
-    const params: any[] = [status];
+
+    // Build the UPDATE query dynamically
+    const values: any[] = [status];
+    const setClauses: string[] = ["status = $1", "updated_at = NOW()"];
+
     if (status === "completed") {
-      query += `, completion_date = NOW()`;
+      setClauses.push("completion_date = NOW()");
     } else if (status === "incomplete" && incompleteReason) {
-      params.push(incompleteReason);
-      query += `, incomplete_reason = $${params.length}`;
+      values.push(incompleteReason);
+      setClauses.push(`incomplete_reason = $${values.length}`);
     }
-    query += ` WHERE id = $${params.length + 1} AND assigned_to = $2`;
-    params.push(req.user!.id);
-    await db.query(query, params);
+
+    // Add the WHERE clause parameters
+    values.push(id, req.user!.id);
+    const query = `
+      UPDATE tasks
+      SET ${setClauses.join(", ")}
+      WHERE id = $${values.length - 1} AND assigned_to = $${values.length}
+    `;
+
+    const result = await db.query(query, values);
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: "Task not found or not assigned to you" });
+      return;
+    }
+
     res.json({ message: "Task status updated" });
   } catch (err) {
-    console.error(err);
+    console.error("Task status update error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });

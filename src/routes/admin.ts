@@ -2,6 +2,7 @@ import { Router, Response } from "express";
 import { verifyJWT, requireRole, AuthRequest } from "../middleware/auth";
 import { db } from "../db/pool";
 import bcrypt from "bcryptjs";
+import { computeRegularOvertime, getEffectiveSchedule } from "../services/attendance";
 
 const router = Router();
 
@@ -213,15 +214,14 @@ router.delete("/employees/:id", async (req: AuthRequest, res: Response) => {
 });
 
 // GET attendance records (admin view)
-router.get("/attendance", async (req: AuthRequest, res: Response) => {
+router.get("/attendance", verifyJWT, requireRole("admin", "manager"), async (req: AuthRequest, res: Response) => {
   try {
     const { user_id, date_from, date_to } = req.query;
-    const { rows } = await db.query(
+
+    // Fetch attendance sessions
+    const { rows: sessions } = await db.query(
       `SELECT 
-         s.id, s.user_id, s.work_date, s.clock_in_time, s.clock_out_time,
-         s.break_minutes, s.personal_break_minutes, s.work_break_minutes,
-         s.worked_minutes, s.status, s.is_overtime, s.overtime_minutes,
-         u.name, ep.employee_code
+         s.*, u.name, ep.employee_code
        FROM attendance_sessions s
        JOIN users u ON u.id = s.user_id
        LEFT JOIN employee_profiles ep ON ep.user_id = s.user_id
@@ -231,8 +231,66 @@ router.get("/attendance", async (req: AuthRequest, res: Response) => {
        ORDER BY s.work_date DESC, u.name`,
       [user_id || null, date_from || null, date_to || null]
     );
-    res.json(rows);
+
+    // Get all unique employee IDs from sessions
+    const employeeIds = [...new Set(sessions.map(s => s.user_id))];
+
+    // Fetch schedules for all those employees (one query)
+    let scheduleMap = new Map();
+    if (employeeIds.length > 0) {
+      const { rows: schedules } = await db.query(
+        `SELECT employee_id, scheduled_start_time, scheduled_end_time
+         FROM employee_schedules
+         WHERE employee_id = ANY($1::uuid[])
+           AND (work_date IS NULL)`, // assume schedule is per employee, not per date; adjust if needed
+        [employeeIds]
+      );
+      for (const sch of schedules) {
+        scheduleMap.set(sch.employee_id, {
+          start: sch.scheduled_start_time,
+          end: sch.scheduled_end_time,
+          crossesMidnight: sch.scheduled_end_time < sch.scheduled_start_time,
+        });
+      }
+    }
+
+    // Enhance each session
+    const enhancedSessions = sessions.map(session => {
+      let schedule = scheduleMap.get(session.user_id);
+      if (!schedule) {
+        // fallback to global settings (or compute dynamically)
+        // We'll use getEffectiveSchedule (which does fallback) – but it's async.
+        // To keep it sync, we could cache the global fallback, but for simplicity we call it synchronously?
+        // Since we are inside a map, we need to handle async properly. Let's use a separate loop.
+        // Actually, we need to handle async inside map. Instead, we'll refactor.
+        // Better: we'll fetch global schedule once and use it as fallback.
+      }
+      // ... We'll compute regular/overtime later in an async loop.
+    });
+
+    // For simplicity, use Promise.all with the fallback logic
+    const enhanced = await Promise.all(sessions.map(async (session) => {
+      let schedule = scheduleMap.get(session.user_id);
+      if (!schedule) {
+        const global = await getEffectiveSchedule(session.user_id); // this will fallback to global
+        schedule = global;
+      }
+      const { regular, overtime } = computeRegularOvertime(
+        session.clock_in_time ? new Date(session.clock_in_time) : null,
+        session.clock_out_time ? new Date(session.clock_out_time) : null,
+        session.break_minutes || 0,
+        schedule
+      );
+      return {
+        ...session,
+        regular_minutes: regular,
+        overtime_minutes: overtime,
+      };
+    }));
+
+    res.json(enhanced);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Server error" });
   }
 });

@@ -8,7 +8,8 @@ import {
   recordPunch,
   getEffectiveSchedule,
   getLastPunch,
-  getSessionData, // <-- new import
+  getSessionData,
+  computeRegularOvertime, // 👈 new import
 } from "../services/attendance";
 import { db } from "../db/pool";
 
@@ -31,7 +32,7 @@ router.post(
         return;
       }
 
-      const { latitude, longitude, photo } = req.body; // <-- add photo
+      const { latitude, longitude, photo } = req.body;
       await assertOnSite(req.user!.id, latitude, longitude);
       const session = await getOrCreateSession(req.user!.id);
       await recordPunch(req.user!.id, session.id, "clock_in", {
@@ -39,7 +40,7 @@ router.post(
         lon: longitude,
         source: "manual",
         remarks: "",
-        photoData: photo, // <-- pass photo
+        photoData: photo,
       });
       const data = await getSessionData(req.user!.id);
       res.json({ message: "Clocked in successfully", data });
@@ -104,7 +105,6 @@ router.post(
         res.status(400).json({ error: "Break reason is required." });
         return;
       }
-      // Remove the on‑site check – work break allowed anywhere
       const session = await getOrCreateSession(req.user!.id);
       await recordPunch(req.user!.id, session.id, "break_start", {
         lat: latitude,
@@ -231,16 +231,43 @@ router.get("/me/summary", verifyJWT, async (req: AuthRequest, res: Response) => 
   }
 });
 
+// Updated GET /me – now includes regular_minutes and overtime_minutes
 router.get("/me", verifyJWT, async (req: AuthRequest, res: Response) => {
   try {
-    const { rows } = await db.query(
+    // Fetch user's sessions (last 30)
+    const { rows: sessions } = await db.query(
       `SELECT * FROM attendance_sessions
        WHERE user_id = $1
        ORDER BY work_date DESC LIMIT 30`,
       [req.user!.id]
     );
-    res.json(rows);
+
+    // Get the user's effective schedule (the same for all sessions unless date‑specific, but we use a single schedule)
+    const schedule = await getEffectiveSchedule(req.user!.id);
+
+    // Enhance each session with regular & overtime minutes
+    const enhancedSessions = sessions.map((session) => {
+      let regular = 0, overtime = 0;
+      if (session.clock_in_time) {
+        const { regular: reg, overtime: ov } = computeRegularOvertime(
+          new Date(session.clock_in_time),
+          session.clock_out_time ? new Date(session.clock_out_time) : null,
+          session.break_minutes || 0,
+          schedule
+        );
+        regular = reg;
+        overtime = ov;
+      }
+      return {
+        ...session,
+        regular_minutes: regular,
+        overtime_minutes: overtime,
+      };
+    });
+
+    res.json(enhancedSessions);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Server error" });
   }
 });

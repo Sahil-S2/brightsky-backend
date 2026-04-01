@@ -8,6 +8,7 @@ const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const pool_1 = require("../db/pool");
 const auth_1 = require("../middleware/auth");
+const attendance_1 = require("../services/attendance");
 const router = (0, express_1.Router)();
 // Login with user_id (4-digit) or email
 router.post("/login", async (req, res) => {
@@ -37,6 +38,14 @@ router.post("/login", async (req, res) => {
         if (!user || !bcryptjs_1.default.compareSync(password, user.password_hash)) {
             res.status(401).json({ error: "Invalid credentials." });
             return;
+        }
+        // Auto-clock-out any active sessions from previous days
+        try {
+            await (0, attendance_1.autoClockOutPreviousDay)(user.id);
+        }
+        catch (err) {
+            console.error("Auto clock-out failed:", err);
+            // Don't block login; just log the error
         }
         const accessToken = jsonwebtoken_1.default.sign({ id: user.id, role: user.role, name: user.full_name || user.name }, process.env.JWT_SECRET, { expiresIn: "8h" });
         const refreshToken = jsonwebtoken_1.default.sign({ id: user.id }, process.env.REFRESH_SECRET, { expiresIn: "30d" });

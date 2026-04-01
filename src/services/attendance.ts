@@ -46,6 +46,51 @@ export async function getEffectiveSchedule(userId: string) {
   };
 }
 
+/**
+ * Computes regular and overtime minutes for a given shift
+ * @param clockIn - actual clock-in time
+ * @param clockOut - actual clock-out time (or null if still active)
+ * @param breakMinutes - total break minutes taken during the shift
+ * @param schedule - the employee's schedule for that day
+ */
+export function computeRegularOvertime(
+  clockIn: Date,
+  clockOut: Date | null,
+  breakMinutes: number,
+  schedule: { start: string; end: string; crossesMidnight: boolean }
+): { regular: number; overtime: number } {
+  const end = clockOut || new Date();
+  const [startHour, startMin] = schedule.start.split(':').map(Number);
+  const [endHour, endMin] = schedule.end.split(':').map(Number);
+
+  // Scheduled start and end on the same day as clock‑in
+  const scheduledStart = new Date(clockIn);
+  scheduledStart.setHours(startHour, startMin, 0, 0);
+  const scheduledEnd = new Date(clockIn);
+  scheduledEnd.setHours(endHour, endMin, 0, 0);
+
+  // If schedule crosses midnight, adjust scheduled end
+  if (schedule.crossesMidnight) {
+    scheduledEnd.setDate(scheduledEnd.getDate() + 1);
+  }
+
+  // Overlap of actual work with scheduled hours
+  const overlapStart = new Date(Math.max(clockIn.getTime(), scheduledStart.getTime()));
+  const overlapEnd = new Date(Math.min(end.getTime(), scheduledEnd.getTime()));
+  let regularMinutes = 0;
+  if (overlapEnd > overlapStart) {
+    regularMinutes = Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 60000);
+  }
+
+  // Total worked minutes = (clock_out - clock_in) - break_minutes
+  const totalWorked = Math.max(0,
+    Math.round((end.getTime() - clockIn.getTime()) / 60000) - breakMinutes
+  );
+  const overtimeMinutes = Math.max(0, totalWorked - regularMinutes);
+
+  return { regular: regularMinutes, overtime: overtimeMinutes };
+}
+
 export async function getEmployeeStatus(userId: string): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
   const { rows: sessions } = await db.query(
@@ -94,7 +139,7 @@ export async function recordPunch(
     remarks?: string;
     breakType?: "personal" | "work";
     breakCompleted?: boolean;
-    photoData?: string; // <-- new
+    photoData?: string;
   }
 ) {
   const currentStatus = await getEmployeeStatus(userId);
@@ -122,7 +167,7 @@ export async function recordPunch(
       meta.remarks || "",
       meta.breakType || null,
       meta.breakCompleted !== undefined ? meta.breakCompleted : null,
-      meta.photoData || null, // <-- new
+      meta.photoData || null,
     ]
   );
 
@@ -203,31 +248,25 @@ export async function updateSessionSummary(sessionId: string) {
 
   const status = clockOutTime ? "completed" : "active";
 
-  // --- Overtime calculation (same as before, using the schedule) ---
-  const schedule = await getEffectiveSchedule(userId);
+  // --- Regular / Overtime split ---
+  let regularMinutes = 0;
   let overtimeMinutes = 0;
-  if (clockInTime && schedule.start) {
-    const [startHour, startMin] = schedule.start.split(':').map(Number);
-    const scheduledStart = new Date(clockInTime);
-    scheduledStart.setHours(startHour, startMin, 0, 0);
-    if (clockInTime < scheduledStart) {
-      overtimeMinutes += Math.round((scheduledStart.getTime() - clockInTime.getTime()) / 60000);
-    }
-  }
-  if (clockOutTime && schedule.end) {
-    const [endHour, endMin] = schedule.end.split(':').map(Number);
-    const scheduledEnd = new Date(clockOutTime);
-    scheduledEnd.setHours(endHour, endMin, 0, 0);
-    if (schedule.crossesMidnight && (endHour < parseInt(schedule.start.split(':')[0]))) {
-      scheduledEnd.setDate(scheduledEnd.getDate() + 1);
-    }
-    if (clockOutTime > scheduledEnd) {
-      overtimeMinutes += Math.round((clockOutTime.getTime() - scheduledEnd.getTime()) / 60000);
-    }
-  }
-  const isOvertime = overtimeMinutes > 0;
+  let isOvertime = false;
 
-  // Update the session record
+  if (clockInTime) {
+    const schedule = await getEffectiveSchedule(userId);
+    const { regular, overtime } = computeRegularOvertime(
+      clockInTime,
+      clockOutTime,
+      totalBreakMinutes,
+      schedule
+    );
+    regularMinutes = regular;
+    overtimeMinutes = overtime;
+    isOvertime = overtimeMinutes > 0;
+  }
+
+  // Update the session record with new columns
   await db.query(
     `UPDATE attendance_sessions
      SET clock_in_time     = $1,
@@ -239,8 +278,9 @@ export async function updateSessionSummary(sessionId: string) {
          status            = $7,
          is_overtime       = $8,
          overtime_minutes  = $9,
+         regular_minutes   = $10,
          updated_at        = NOW()
-     WHERE id = $10`,
+     WHERE id = $11`,
     [
       clockInTime?.toISOString() || null,
       clockOutTime?.toISOString() || null,
@@ -251,6 +291,7 @@ export async function updateSessionSummary(sessionId: string) {
       status,
       isOvertime,
       overtimeMinutes,
+      regularMinutes,
       sessionId,
     ]
   );
@@ -291,4 +332,28 @@ export async function getUserTimezone(userId: string): Promise<string> {
     [userId]
   );
   return rows[0]?.timezone || 'America/New_York';
+}
+
+// Auto-clock-out for previous day’s active sessions
+export async function autoClockOutPreviousDay(userId: string) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const { rows: activeSessions } = await db.query(
+    `SELECT * FROM attendance_sessions
+     WHERE user_id = $1 AND status = 'active' AND work_date < $2`,
+    [userId, today]
+  );
+
+  for (const session of activeSessions) {
+    const clockOutTime = new Date(session.work_date);
+    clockOutTime.setHours(23, 59, 59); // end of that day
+    const workedMinutes = Math.round((clockOutTime.getTime() - new Date(session.clock_in_time).getTime()) / 60000) - (session.break_minutes || 0);
+
+    await db.query(
+      `UPDATE attendance_sessions
+       SET clock_out_time = $1, worked_minutes = $2, status = 'completed', is_auto_corrected = true
+       WHERE id = $3`,
+      [clockOutTime, workedMinutes, session.id]
+    );
+  }
 }

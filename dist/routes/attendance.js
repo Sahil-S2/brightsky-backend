@@ -49,7 +49,7 @@ router.post("/clock-in", auth_1.verifyJWT, (0, audit_1.auditLog)("clock_in", "at
             res.status(409).json({ error: "You have already clocked out today. Cannot clock in again." });
             return;
         }
-        const { latitude, longitude, photo } = req.body; // <-- add photo
+        const { latitude, longitude, photo } = req.body;
         await (0, geofence_1.assertOnSite)(req.user.id, latitude, longitude);
         const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "clock_in", {
@@ -57,7 +57,7 @@ router.post("/clock-in", auth_1.verifyJWT, (0, audit_1.auditLog)("clock_in", "at
             lon: longitude,
             source: "manual",
             remarks: "",
-            photoData: photo, // <-- pass photo
+            photoData: photo,
         });
         const data = await (0, attendance_1.getSessionData)(req.user.id);
         res.json({ message: "Clocked in successfully", data });
@@ -107,7 +107,6 @@ router.post("/custom-break-start", auth_1.verifyJWT, (0, audit_1.auditLog)("brea
             res.status(400).json({ error: "Break reason is required." });
             return;
         }
-        // Remove the on‑site check – work break allowed anywhere
         const session = await (0, attendance_1.getOrCreateSession)(req.user.id);
         await (0, attendance_1.recordPunch)(req.user.id, session.id, "break_start", {
             lat: latitude,
@@ -217,14 +216,33 @@ router.get("/me/summary", auth_1.verifyJWT, async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+// Updated GET /me – now includes regular_minutes and overtime_minutes
 router.get("/me", auth_1.verifyJWT, async (req, res) => {
     try {
-        const { rows } = await pool_1.db.query(`SELECT * FROM attendance_sessions
+        // Fetch user's sessions (last 30)
+        const { rows: sessions } = await pool_1.db.query(`SELECT * FROM attendance_sessions
        WHERE user_id = $1
        ORDER BY work_date DESC LIMIT 30`, [req.user.id]);
-        res.json(rows);
+        // Get the user's effective schedule (the same for all sessions unless date‑specific, but we use a single schedule)
+        const schedule = await (0, attendance_1.getEffectiveSchedule)(req.user.id);
+        // Enhance each session with regular & overtime minutes
+        const enhancedSessions = sessions.map((session) => {
+            let regular = 0, overtime = 0;
+            if (session.clock_in_time) {
+                const { regular: reg, overtime: ov } = (0, attendance_1.computeRegularOvertime)(new Date(session.clock_in_time), session.clock_out_time ? new Date(session.clock_out_time) : null, session.break_minutes || 0, schedule);
+                regular = reg;
+                overtime = ov;
+            }
+            return {
+                ...session,
+                regular_minutes: regular,
+                overtime_minutes: overtime,
+            };
+        });
+        res.json(enhancedSessions);
     }
     catch (err) {
+        console.error(err);
         res.status(500).json({ error: "Server error" });
     }
 });

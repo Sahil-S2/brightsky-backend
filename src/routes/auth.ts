@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { db } from "../db/pool";
 import { verifyJWT, AuthRequest } from "../middleware/auth";
+import { autoClockOutPreviousDay } from "../services/attendance";
 
 const router = Router();
 
@@ -36,6 +37,14 @@ router.post("/login", async (req: Request, res: Response) => {
     if (!user || !bcrypt.compareSync(password, user.password_hash)) {
       res.status(401).json({ error: "Invalid credentials." });
       return;
+    }
+
+    // Auto-clock-out any active sessions from previous days
+    try {
+      await autoClockOutPreviousDay(user.id);
+    } catch (err) {
+      console.error("Auto clock-out failed:", err);
+      // Don't block login; just log the error
     }
 
     const accessToken = jwt.sign(

@@ -20,6 +20,7 @@ const export_1 = __importDefault(require("./routes/export"));
 const worksites_1 = __importDefault(require("./routes/worksites"));
 const schedules_1 = __importDefault(require("./routes/schedules"));
 const tasks_1 = __importDefault(require("./routes/tasks"));
+const route_1 = __importDefault(require("./routes/route"));
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 4000;
 app.use((0, helmet_1.default)());
@@ -53,6 +54,7 @@ app.use("/api/worksites", worksites_1.default);
 app.use("/api/employees", schedules_1.default);
 app.use("/api/security", security_1.default);
 app.use("/api/tasks", tasks_1.default);
+app.use("/api/route", route_1.default);
 app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
 });

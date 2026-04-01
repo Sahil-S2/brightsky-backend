@@ -18,6 +18,7 @@ import exportRoutes from "./routes/export";
 import worksiteRoutes from "./routes/worksites";
 import scheduleRoutes from "./routes/schedules";
 import taskRoutes from "./routes/tasks";
+import routeRoutes from "./routes/route";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -54,6 +55,7 @@ app.use("/api/worksites", worksiteRoutes);
 app.use("/api/employees", scheduleRoutes);
 app.use("/api/security", securityRoutes);
 app.use("/api/tasks", taskRoutes);
+app.use("/api/route", routeRoutes);
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });

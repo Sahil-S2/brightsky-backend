@@ -23,11 +23,24 @@ async function getEffectiveSchedule(userId) {
      FROM employee_schedules
      WHERE employee_id = $1`, [userId]);
     if (schedRows.length) {
-        const { scheduled_start_time, scheduled_end_time } = schedRows[0];
+        let { scheduled_start_time, scheduled_end_time } = schedRows[0];
+        // If end time is missing, equal to start, or invalid, fall back to global
+        if (!scheduled_end_time || scheduled_end_time === scheduled_start_time) {
+            const { rows: settingsRows } = await pool_1.db.query(`SELECT working_hours_start, working_hours_end
+         FROM site_settings WHERE id = 1`);
+            if (settingsRows.length) {
+                scheduled_start_time = settingsRows[0].working_hours_start;
+                scheduled_end_time = settingsRows[0].working_hours_end;
+            }
+            else {
+                scheduled_start_time = "07:00";
+                scheduled_end_time = "17:00";
+            }
+        }
         return {
             start: scheduled_start_time,
             end: scheduled_end_time,
-            crossesMidnight: scheduled_end_time < scheduled_start_time
+            crossesMidnight: scheduled_end_time < scheduled_start_time,
         };
     }
     // Fallback to global site settings
@@ -40,14 +53,14 @@ async function getEffectiveSchedule(userId) {
         return {
             start: start,
             end: end,
-            crossesMidnight: end < start
+            crossesMidnight: end < start,
         };
     }
     // Ultimate fallback
     return {
         start: "07:00",
         end: "17:00",
-        crossesMidnight: false
+        crossesMidnight: false,
     };
 }
 /**

@@ -274,29 +274,50 @@ router.get("/attendance", verifyJWT, requireRole("admin", "manager"), async (req
 // GET reports summary
 router.get("/reports/summary", async (req: AuthRequest, res: Response) => {
   try {
-    const { rows } = await db.query(
-      `SELECT
-         u.id,
-         u.name,
-         ep.department,
-         ep.designation,
-         COUNT(DISTINCT s.id) as total_sessions,
-         COALESCE(SUM(s.worked_minutes), 0) as total_minutes,
-         COALESCE(SUM(s.regular_minutes), 0) as total_regular_minutes,
-         COALESCE(SUM(s.overtime_minutes), 0) as total_overtime_minutes,
-         COALESCE(AVG(s.worked_minutes), 0) as avg_daily_minutes,
-         COALESCE(SUM(CASE WHEN s.work_date >= CURRENT_DATE - 6 THEN s.worked_minutes ELSE 0 END), 0) as week_minutes,
-         COUNT(CASE WHEN p.punch_type = 'break_start' THEN 1 END) as total_breaks,
-         COALESCE(SUM(s.personal_break_minutes), 0) as personal_break_minutes,
-         COALESCE(SUM(s.work_break_minutes), 0) as work_break_minutes
-       FROM users u
-       LEFT JOIN employee_profiles ep ON ep.user_id = u.id
-       LEFT JOIN attendance_sessions s ON s.user_id = u.id
-       LEFT JOIN punch_records p ON p.session_id = s.id
-       WHERE u.status = 'active' AND u.role = 'employee'
-       GROUP BY u.id, u.name, ep.department, ep.designation
-       ORDER BY u.name`
-    );
+    const { rows } = await db.query(`
+      WITH session_aggregates AS (
+        SELECT
+          user_id,
+          COUNT(*) AS total_sessions,
+          COALESCE(SUM(worked_minutes), 0) AS total_minutes,
+          COALESCE(SUM(regular_minutes), 0) AS total_regular_minutes,
+          COALESCE(SUM(overtime_minutes), 0) AS total_overtime_minutes,
+          COALESCE(AVG(worked_minutes), 0) AS avg_daily_minutes,
+          COALESCE(SUM(CASE WHEN work_date >= CURRENT_DATE - 6 THEN worked_minutes ELSE 0 END), 0) AS week_minutes,
+          COALESCE(SUM(personal_break_minutes), 0) AS personal_break_minutes,
+          COALESCE(SUM(work_break_minutes), 0) AS work_break_minutes
+        FROM attendance_sessions
+        GROUP BY user_id
+      ),
+      break_counts AS (
+        SELECT
+          s.user_id,
+          COUNT(p.id) AS total_breaks
+        FROM attendance_sessions s
+        LEFT JOIN punch_records p ON p.session_id = s.id AND p.punch_type = 'break_start'
+        GROUP BY s.user_id
+      )
+      SELECT
+        u.id,
+        u.name,
+        ep.department,
+        ep.designation,
+        COALESCE(sa.total_sessions, 0) AS total_sessions,
+        COALESCE(sa.total_minutes, 0) AS total_minutes,
+        COALESCE(sa.total_regular_minutes, 0) AS total_regular_minutes,
+        COALESCE(sa.total_overtime_minutes, 0) AS total_overtime_minutes,
+        COALESCE(sa.avg_daily_minutes, 0) AS avg_daily_minutes,
+        COALESCE(sa.week_minutes, 0) AS week_minutes,
+        COALESCE(bc.total_breaks, 0) AS total_breaks,
+        COALESCE(sa.personal_break_minutes, 0) AS personal_break_minutes,
+        COALESCE(sa.work_break_minutes, 0) AS work_break_minutes
+      FROM users u
+      LEFT JOIN employee_profiles ep ON ep.user_id = u.id
+      LEFT JOIN session_aggregates sa ON sa.user_id = u.id
+      LEFT JOIN break_counts bc ON bc.user_id = u.id
+      WHERE u.status = 'active' AND u.role = 'employee'
+      ORDER BY u.name
+    `);
     res.json(rows);
   } catch (err) {
     console.error(err);

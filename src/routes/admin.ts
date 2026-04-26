@@ -271,7 +271,6 @@ router.get("/attendance", verifyJWT, requireRole("admin", "manager"), async (req
   }
 });
 
-// GET reports summary
 router.get("/reports/summary", async (req: AuthRequest, res: Response) => {
   try {
     const { rows } = await db.query(`

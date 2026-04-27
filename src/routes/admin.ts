@@ -318,6 +318,8 @@ router.get("/reports/summary", async (req: AuthRequest, res: Response) => {
       WHERE u.status = 'active' AND u.role = 'employee'
       ORDER BY u.name
     `);
+    // Log the first row for debugging (check Railway logs)
+    if (rows.length) console.log("First summary row:", rows[0]);
     res.json(rows);
   } catch (err) {
     console.error(err);

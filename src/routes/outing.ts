@@ -17,6 +17,7 @@ async function getActiveOuting(userId: string) {
 }
 
 // Start project outing
+// Start project outing
 router.post(
     "/outing/start",
     verifyJWT,
@@ -26,8 +27,11 @@ router.post(
             const { latitude, longitude, remarks } = req.body;
             const userId = req.user!.id;
 
+            console.log(`[Backend] User ${userId} starting outing. Lat/Lon: ${latitude}/${longitude}`);
+
             const active = await getActiveOuting(userId);
             if (active) {
+                console.warn(`[Backend] User ${userId} already has an active outing.`);
                 res.status(409).json({ error: "You already have an active project outing. Please end it first." });
                 return;
             }
@@ -42,9 +46,10 @@ router.post(
                 [userId, location, remarks || null]
             );
 
+            console.log(`[Backend] Outing started successfully for User ${userId}.`);
             res.status(201).json({ outing: rows[0], message: "Project task started" });
         } catch (err: any) {
-            console.error(err);
+            console.error("[Backend] Error starting outing:", err);
             res.status(500).json({ error: "Server error" });
         }
     }
@@ -60,8 +65,11 @@ router.post(
             const { latitude, longitude, remarks } = req.body;
             const userId = req.user!.id;
 
+            console.log(`[Backend] User ${userId} ending outing. Lat/Lon: ${latitude}/${longitude}`);
+
             const active = await getActiveOuting(userId);
             if (!active) {
+                console.warn(`[Backend] No active outing found for User ${userId}.`);
                 res.status(404).json({ error: "No active project outing found" });
                 return;
             }
@@ -81,9 +89,10 @@ router.post(
                 [location, remarks || null, duration, active.id]
             );
 
+            console.log(`[Backend] Outing ended successfully for User ${userId}. Duration: ${duration} mins.`);
             res.json({ outing: rows[0], message: "Project task ended" });
         } catch (err: any) {
-            console.error(err);
+            console.error("[Backend] Error ending outing:", err);
             res.status(500).json({ error: "Server error" });
         }
     }

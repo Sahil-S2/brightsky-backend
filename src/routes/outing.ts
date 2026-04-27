@@ -5,7 +5,7 @@ import { auditLog } from "../middleware/audit";
 
 const router = Router();
 
-// Helper: get current active outing (if any)
+// Get active outing
 async function getActiveOuting(userId: string) {
     const { rows } = await db.query(
         `SELECT * FROM project_outings
@@ -16,7 +16,7 @@ async function getActiveOuting(userId: string) {
     return rows[0] || null;
 }
 
-// START project outing (secondary punch-in)
+// Start project outing
 router.post(
     "/outing/start",
     verifyJWT,
@@ -26,14 +26,12 @@ router.post(
             const { latitude, longitude, remarks } = req.body;
             const userId = req.user!.id;
 
-            // Check if already has an active outing
             const active = await getActiveOuting(userId);
             if (active) {
                 res.status(409).json({ error: "You already have an active project outing. Please end it first." });
                 return;
             }
 
-            // Build location string (could be lat/lon or address; here we use lat,lon)
             const location = (latitude && longitude) ? `${latitude},${longitude}` : null;
 
             const { rows } = await db.query(
@@ -52,7 +50,7 @@ router.post(
     }
 );
 
-// END project outing (secondary punch-out)
+// End project outing
 router.post(
     "/outing/end",
     verifyJWT,
@@ -91,7 +89,7 @@ router.post(
     }
 );
 
-// Employee: get own outing history (paginated)
+// Employee history
 router.get("/outing/history", verifyJWT, async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user!.id;
@@ -119,7 +117,7 @@ router.get("/outing/history", verifyJWT, async (req: AuthRequest, res: Response)
     }
 });
 
-// Admin/Manager: get all outings (with filters)
+// Admin/manager view
 router.get(
     "/outing/admin/history",
     verifyJWT,

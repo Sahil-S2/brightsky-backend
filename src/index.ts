@@ -7,7 +7,6 @@ import dotenv from "dotenv";
 import auditRoutes from "./routes/audit";
 import securityRoutes from "./routes/security";
 
-
 dotenv.config();
 
 import authRoutes from "./routes/auth";
@@ -19,6 +18,7 @@ import worksiteRoutes from "./routes/worksites";
 import scheduleRoutes from "./routes/schedules";
 import taskRoutes from "./routes/tasks";
 import routeRoutes from "./routes/route";
+import outingRoutes from "./routes/outing";   // 👈 new import for project outings
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -47,6 +47,7 @@ app.use(cookieParser());
 
 app.use("/api/auth",       authRoutes);
 app.use("/api/attendance", attendanceRoutes);
+app.use("/api/attendance", outingRoutes);      // 👈 new – mounts under the same base path
 app.use("/api/admin",      adminRoutes);
 app.use("/api/settings",   settingsRoutes);
 app.use("/api/export",     exportRoutes);

@@ -279,11 +279,32 @@ router.get("/reports/summary", async (req: AuthRequest, res: Response) => {
         SELECT
           user_id,
           COUNT(*) AS total_sessions,
-          COALESCE(SUM(worked_minutes), 0) AS total_minutes,
-          COALESCE(SUM(regular_minutes), 0) AS total_regular_minutes,
-          COALESCE(SUM(overtime_minutes), 0) AS total_overtime_minutes,
-          COALESCE(AVG(worked_minutes), 0) AS avg_daily_minutes,
-          COALESCE(SUM(CASE WHEN work_date >= CURRENT_DATE - 6 THEN worked_minutes ELSE 0 END), 0) AS week_minutes,
+          COALESCE(SUM(
+            CASE
+              WHEN status = 'active' AND clock_in_time IS NOT NULL
+              THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - clock_in_time))::integer / 60 - COALESCE(break_minutes, 0))
+              ELSE COALESCE(worked_minutes, 0)
+            END
+          ), 0) AS total_minutes,
+          COALESCE(SUM(COALESCE(regular_minutes, 0)), 0) AS total_regular_minutes,
+          COALESCE(SUM(COALESCE(overtime_minutes, 0)), 0) AS total_overtime_minutes,
+          COALESCE(AVG(
+            CASE
+              WHEN status = 'active' AND clock_in_time IS NOT NULL
+              THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - clock_in_time))::integer / 60 - COALESCE(break_minutes, 0))
+              ELSE COALESCE(worked_minutes, 0)
+            END
+          ), 0) AS avg_daily_minutes,
+          COALESCE(SUM(
+            CASE WHEN work_date >= CURRENT_DATE - 6
+            THEN
+              CASE
+                WHEN status = 'active' AND clock_in_time IS NOT NULL
+                THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - clock_in_time))::integer / 60 - COALESCE(break_minutes, 0))
+                ELSE COALESCE(worked_minutes, 0)
+              END
+            ELSE 0 END
+          ), 0) AS week_minutes,
           COALESCE(SUM(personal_break_minutes), 0) AS personal_break_minutes,
           COALESCE(SUM(work_break_minutes), 0) AS work_break_minutes
         FROM attendance_sessions

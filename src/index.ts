@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import auditRoutes from "./routes/audit";
 import securityRoutes from "./routes/security";
 
+
 dotenv.config();
 
 import authRoutes from "./routes/auth";
@@ -19,6 +20,8 @@ import scheduleRoutes from "./routes/schedules";
 import taskRoutes from "./routes/tasks";
 import routeRoutes from "./routes/route";
 import outingRoutes from "./routes/outing";   // 👈 new import for project outings
+import notificationRoutes from "./routes/notifications";
+
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -55,6 +58,7 @@ app.use("/api/audit-logs", auditRoutes);
 app.use("/api/worksites", worksiteRoutes);
 app.use("/api/employees", scheduleRoutes);
 app.use("/api/security", securityRoutes);
+app.use("/api/notifications", notificationRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/route", routeRoutes);
 

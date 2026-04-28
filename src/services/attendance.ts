@@ -257,8 +257,11 @@ export async function updateSessionSummary(sessionId: string) {
     }
   }
 
-  // If still on break, count current break time
-  if (breakStart) {
+  // If still on break (and no clockOut), count current break time.
+  // NOTE: For auto-corrected historical sessions we always insert a break_end
+  // punch before the clock_out punch, so breakStart will be null here for
+  // those sessions. This branch only fires for genuinely active sessions.
+  if (breakStart && !clockOutTime) {
     const ongoing = Math.round((new Date().getTime() - breakStart.getTime()) / 60000);
     if (currentBreakType === "personal") {
       personalBreakMinutes += ongoing;
@@ -353,8 +356,8 @@ export async function getSessionData(userId: string) {
 
 export async function getLastPunch(userId: string, sessionId: string) {
   const { rows } = await db.query(
-    `SELECT * FROM punch_records 
-     WHERE user_id = $1 AND session_id = $2 
+    `SELECT * FROM punch_records
+     WHERE user_id = $1 AND session_id = $2
      ORDER BY punch_time DESC LIMIT 1`,
     [userId, sessionId]
   );
@@ -369,10 +372,23 @@ export async function getUserTimezone(userId: string): Promise<string> {
   return rows[0]?.timezone || 'America/New_York';
 }
 
-// Auto-clock-out for previous day’s active sessions
+// =============================================================================
+// Auto-clock-out for previous day's active sessions
+// =============================================================================
+// Called at login time. Finds any session from a prior work_date that was
+// never closed and closes it properly via punch records so that ALL computed
+// columns (regular_minutes, overtime_minutes, personal_break_minutes,
+// work_break_minutes, is_overtime) are correctly populated.
+//
+// Previous bug: the old implementation wrote a manual UPDATE directly to
+// attendance_sessions with only worked_minutes set, leaving every other
+// computed column at 0/false. It also never wrote a clock_out punch record,
+// so the punch history was incomplete.
+// =============================================================================
 export async function autoClockOutPreviousDay(userId: string) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+
   const { rows: activeSessions } = await db.query(
     `SELECT * FROM attendance_sessions
      WHERE user_id = $1 AND status = 'active' AND work_date < $2`,
@@ -380,15 +396,81 @@ export async function autoClockOutPreviousDay(userId: string) {
   );
 
   for (const session of activeSessions) {
-    const clockOutTime = new Date(session.work_date);
-    clockOutTime.setHours(23, 59, 59); // end of that day
-    const workedMinutes = Math.round((clockOutTime.getTime() - new Date(session.clock_in_time).getTime()) / 60000) - (session.break_minutes || 0);
+    // ── Guard: session exists but clock_in was never recorded ─────────────
+    // This is an empty shell (getOrCreateSession was called but the employee
+    // never actually clocked in). Just mark it completed and move on.
+    if (!session.clock_in_time) {
+      await db.query(
+        `UPDATE attendance_sessions
+         SET status = 'completed', is_auto_corrected = true
+         WHERE id = $1`,
+        [session.id]
+      );
+      continue;
+    }
 
+    // ── Anchor: end-of-work-day timestamps ────────────────────────────────
+    // Clock-out is set to 23:59:59 of the work_date.
+    // If there is an unclosed break, that break ends at 23:58:59 (60 s before
+    // clock-out) so the punch order is valid and the break duration is
+    // naturally bounded to that day.
+    const workDate = new Date(session.work_date);
+    const clockOutTime = new Date(workDate);
+    clockOutTime.setHours(23, 59, 59, 0);
+
+    const breakEndTime = new Date(workDate);
+    breakEndTime.setHours(23, 58, 59, 0);
+
+    // ── Close any open break ──────────────────────────────────────────────
+    // Inspect the last punch for this session. If it is a break_start then
+    // no matching break_end was ever recorded — insert one now so that
+    // updateSessionSummary does not count the break as running until NOW().
+    const { rows: lastPunchRows } = await db.query(
+      `SELECT punch_type FROM punch_records
+       WHERE session_id = $1
+       ORDER BY punch_time DESC
+       LIMIT 1`,
+      [session.id]
+    );
+
+    const lastPunchType = lastPunchRows[0]?.punch_type;
+
+    if (lastPunchType === "break_start") {
+      await db.query(
+        `INSERT INTO punch_records
+           (user_id, session_id, punch_type, source, remarks, punch_time)
+         VALUES ($1, $2, 'break_end', 'auto',
+                 'Auto break-end — session not closed on previous day', $3)`,
+        [userId, session.id, breakEndTime.toISOString()]
+      );
+    }
+
+    // ── Insert the synthetic clock_out punch ──────────────────────────────
+    // Writing to punch_records (not directly to attendance_sessions) keeps the
+    // punch history consistent and lets updateSessionSummary derive every
+    // computed column from the canonical source of truth.
+    await db.query(
+      `INSERT INTO punch_records
+         (user_id, session_id, punch_type, source, remarks, punch_time)
+       VALUES ($1, $2, 'clock_out', 'auto',
+               'Auto clock-out — session not closed on previous day', $3)`,
+      [userId, session.id, clockOutTime.toISOString()]
+    );
+
+    // ── Recompute all columns from punch records ───────────────────────────
+    // This populates: clock_in_time, clock_out_time, break_minutes,
+    // personal_break_minutes, work_break_minutes, worked_minutes,
+    // regular_minutes, overtime_minutes, is_overtime, status = 'completed'.
+    await updateSessionSummary(session.id);
+
+    // ── Mark as auto-corrected ─────────────────────────────────────────────
+    // updateSessionSummary does not touch is_auto_corrected, so we set it
+    // explicitly after the recompute.
     await db.query(
       `UPDATE attendance_sessions
-       SET clock_out_time = $1, worked_minutes = $2, status = 'completed', is_auto_corrected = true
-       WHERE id = $3`,
-      [clockOutTime, workedMinutes, session.id]
+       SET is_auto_corrected = true
+       WHERE id = $1`,
+      [session.id]
     );
   }
 }

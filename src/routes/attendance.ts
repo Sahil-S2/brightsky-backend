@@ -33,18 +33,35 @@ router.post(
         return;
       }
 
-      const { latitude, longitude, photo } = req.body;
-      await assertOnSite(req.user!.id, latitude, longitude);
-      const session = await getOrCreateSession(req.user!.id);
-      await recordPunch(req.user!.id, session.id, "clock_in", {
-        lat: latitude,
-        lon: longitude,
-        source: "manual",
-        remarks: "",
-        photoData: photo,
-      });
-      const data = await getSessionData(req.user!.id);
-      res.json({ message: "Clocked in successfully", data });
+      const { latitude, longitude, photo, forceOutside, estimatedMinutes, remarks } = req.body;
+
+// Skip geofence check when employee confirmed Warning Clock-In
+if (!forceOutside) {
+  await assertOnSite(req.user!.id, latitude, longitude);
+}
+
+const session = await getOrCreateSession(req.user!.id);
+
+// Mark session as outside-geofence and store estimated minutes for manager review
+if (forceOutside) {
+  await db.query(
+    `UPDATE attendance_sessions
+     SET is_outside_geofence = true,
+         estimated_minutes   = $1
+     WHERE id = $2`,
+    [estimatedMinutes ? parseInt(estimatedMinutes) : null, session.id]
+  );
+}
+
+await recordPunch(req.user!.id, session.id, "clock_in", {
+  lat:       latitude,
+  lon:       longitude,
+  source:    "manual",
+  remarks:   remarks || "",
+  photoData: photo,
+});
+const data = await getSessionData(req.user!.id);
+res.json({ message: "Clocked in successfully", data });
     } catch (err: any) {
       res.status(err.status || 500).json({ error: err.message || "Server error" });
     }

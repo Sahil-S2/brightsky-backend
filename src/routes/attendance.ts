@@ -1,3 +1,4 @@
+import { DateTime } from "luxon";
 import { Router, Response } from "express";
 import { verifyJWT, AuthRequest } from "../middleware/auth";
 import { auditLog } from "../middleware/audit";
@@ -177,25 +178,34 @@ router.post(
       }
 
       // Auto clock‑out after shift end if outside geofence
-      if (status === "clocked_in" && session && !session.clock_out_time) {
-        const schedule = await getEffectiveSchedule(req.user!.id);
-        const now = new Date();
-        const [endH, endM] = schedule.end.split(':').map(Number);
-        const scheduledEnd = new Date(now);
-        scheduledEnd.setHours(endH, endM, 0, 0);
-        // If schedule crosses midnight, adjust scheduledEnd to next day
-        if (schedule.crossesMidnight && (endH < parseInt(schedule.start.split(':')[0]))) {
-          scheduledEnd.setDate(scheduledEnd.getDate() + 1);
-        }
-        const afterShiftEnd = now > scheduledEnd;
-        if (afterShiftEnd && !onSite) {
-          await recordPunch(req.user!.id, session.id, "clock_out", {
-            lat: latitude, lon: longitude, source: "auto",
-            remarks: "Auto clock-out — shift ended and off-site",
-          });
-          status = await getEmployeeStatus(req.user!.id);
-        }
-      }
+      // Auto clock‑out after shift end if outside geofence
+if (status === "clocked_in" && session && !session.clock_out_time) {
+  const schedule = await getEffectiveSchedule(req.user!.id);
+
+  // Use the employee's own timezone (carried in the JWT), not the server's
+  // timezone (Railway = UTC). new Date().setHours() was previously setting
+  // the shift-end boundary in UTC, which was off by 4–9.5 hours depending
+  // on the employee's location.
+  const userTz = req.user!.timezone || "America/New_York";
+  const nowLocal = DateTime.now().setZone(userTz);
+
+  const [endH, endM] = schedule.end.split(':').map(Number);
+  let scheduledEnd = nowLocal.set({ hour: endH, minute: endM, second: 0, millisecond: 0 });
+
+  // Midnight-crossing schedule: shift end is on the following calendar day
+  if (schedule.crossesMidnight) {
+    scheduledEnd = scheduledEnd.plus({ days: 1 });
+  }
+
+  const afterShiftEnd = nowLocal > scheduledEnd;
+  if (afterShiftEnd && !onSite) {
+    await recordPunch(req.user!.id, session.id, "clock_out", {
+      lat: latitude, lon: longitude, source: "auto",
+      remarks: "Auto clock-out — shift ended and off-site",
+    });
+    status = await getEmployeeStatus(req.user!.id);
+  }
+}
 
       res.json({ onSite, distanceFt: Math.round(dist), status });
     } catch (err: any) {

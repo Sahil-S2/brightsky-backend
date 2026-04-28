@@ -62,6 +62,18 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+app.get("/api/_version", (_req, res) => {
+  res.json({
+    sha: process.env.RAILWAY_GIT_COMMIT_SHA || "unknown",
+    branch: process.env.RAILWAY_GIT_BRANCH || "unknown",
+    builtAt: process.env.RAILWAY_DEPLOYMENT_ID || "unknown",
+    hasOuting: !!app._router.stack.some(l =>
+      l.regexp?.toString().includes("attendance") &&
+      l.handle?.stack?.some(s => s.route?.path?.includes("outing"))
+    ),
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Bright Sky API running on http://localhost:${PORT}`);
 });

@@ -1,3 +1,19 @@
+// =============================================================================
+// routes/outing.ts — "Start Project Task" feature (production-hardened)
+// =============================================================================
+// Mounted in src/index.ts as:
+//     app.use("/api/attendance", outingRoutes);
+//
+// Effective endpoints:
+//     GET   /api/attendance/outing/active
+//     POST  /api/attendance/outing/start
+//     POST  /api/attendance/outing/end
+//     GET   /api/attendance/outing/history
+//     GET   /api/attendance/outing/admin/history   (admin/manager only)
+//
+// Requires the project_outings table — see migrations/2026-04-28-create-project-outings.sql
+// =============================================================================
+
 import { Router, Response } from "express";
 import { verifyJWT, requireRole, AuthRequest } from "../middleware/auth";
 import { db } from "../db/pool";
@@ -6,30 +22,52 @@ import { auditLog } from "../middleware/audit";
 const router = Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPER
+// HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Returns the one row for the user that has no clock_out_time, or null. */
 async function getActiveOuting(userId: string) {
   const { rows } = await db.query(
     `SELECT * FROM project_outings
-     WHERE user_id = $1 AND clock_out_time IS NULL
-     ORDER BY clock_in_time DESC LIMIT 1`,
+      WHERE user_id = $1 AND clock_out_time IS NULL
+      ORDER BY clock_in_time DESC
+      LIMIT 1`,
     [userId]
   );
   return rows[0] || null;
 }
 
+/** Sanitise lat/lon coming in from the browser. Returns "lat,lon" or null. */
+function buildLocation(latitude: unknown, longitude: unknown): string | null {
+  const lat = Number(latitude);
+  const lon = Number(longitude);
+  if (
+    latitude == null || longitude == null ||
+    Number.isNaN(lat) || Number.isNaN(lon) ||
+    lat < -90 || lat > 90 ||
+    lon < -180 || lon > 180
+  ) {
+    return null;
+  }
+  // 6 decimals ≈ 11 cm of precision — plenty, and avoids logging huge floats.
+  return `${lat.toFixed(6)},${lon.toFixed(6)}`;
+}
+
+/** Trim/cap free-text remarks so a malicious client can't store novels. */
+function cleanRemarks(input: unknown): string | null {
+  if (typeof input !== "string") return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, 500);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /outing/active  ← NEW: dedicated endpoint so the frontend doesn't need
-//                         to infer active state from paginated history
+// GET /outing/active
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/outing/active", verifyJWT, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
-    console.log(`[outing/active] Fetching active outing for user ${userId}`);
     const outing = await getActiveOuting(userId);
-    console.log(`[outing/active] Result:`, outing ? `id=${outing.id}` : "none");
     res.json({ outing: outing || null });
   } catch (err: any) {
     console.error("[outing/active] Error:", err);
@@ -46,41 +84,41 @@ router.post(
   auditLog("project_outing_start", "project_outings"),
   async (req: AuthRequest, res: Response) => {
     try {
-      const { latitude, longitude, remarks } = req.body;
       const userId = req.user!.id;
+      const location = buildLocation(req.body?.latitude, req.body?.longitude);
+      const remarks  = cleanRemarks(req.body?.remarks);
 
-      console.log(`[outing/start] User ${userId} attempting to start outing`, {
-        latitude,
-        longitude,
-        remarks,
-      });
+      console.log(`[outing/start] user=${userId} loc=${location ?? "n/a"}`);
 
+      // Defensive check — the unique partial index will also enforce this,
+      // but returning a friendly 409 is nicer than a Postgres constraint error.
       const active = await getActiveOuting(userId);
       if (active) {
-        console.warn(`[outing/start] Conflict – user ${userId} already has active outing id=${active.id}`);
-        res.status(409).json({
-          error: "You already have an active project outing. Please end it first.",
+        return res.status(409).json({
+          error: "You already have an active project task. Please end it first.",
+          outing: active,
         });
-        return;
       }
-
-      // Store location only when both coordinates are present and valid
-      const location =
-        latitude != null && longitude != null && !isNaN(latitude) && !isNaN(longitude)
-          ? `${latitude},${longitude}`
-          : null;
 
       const { rows } = await db.query(
         `INSERT INTO project_outings
-           (user_id, clock_in_time, clock_in_location, clock_in_remarks)
+            (user_id, clock_in_time, clock_in_location, clock_in_remarks)
          VALUES ($1, NOW(), $2, $3)
          RETURNING *`,
-        [userId, location, remarks || null]
+        [userId, location, remarks]
       );
 
-      console.log(`[outing/start] Created outing id=${rows[0].id} for user ${userId}`);
+      console.log(`[outing/start] created id=${rows[0].id}`);
       res.status(201).json({ outing: rows[0], message: "Project task started" });
     } catch (err: any) {
+      // 23505 = unique_violation — race condition on the partial unique index.
+      if (err?.code === "23505") {
+        const active = await getActiveOuting(req.user!.id);
+        return res.status(409).json({
+          error: "You already have an active project task.",
+          outing: active,
+        });
+      }
       console.error("[outing/start] Error:", err);
       res.status(500).json({ error: "Server error" });
     }
@@ -96,45 +134,34 @@ router.post(
   auditLog("project_outing_end", "project_outings"),
   async (req: AuthRequest, res: Response) => {
     try {
-      const { latitude, longitude, remarks } = req.body;
       const userId = req.user!.id;
-
-      console.log(`[outing/end] User ${userId} attempting to end outing`, {
-        latitude,
-        longitude,
-        remarks,
-      });
+      const location = buildLocation(req.body?.latitude, req.body?.longitude);
+      const remarks  = cleanRemarks(req.body?.remarks);
 
       const active = await getActiveOuting(userId);
       if (!active) {
-        console.warn(`[outing/end] No active outing found for user ${userId}`);
-        res.status(404).json({ error: "No active project outing found" });
-        return;
+        return res.status(404).json({ error: "No active project task found" });
       }
 
-      const location =
-        latitude != null && longitude != null && !isNaN(latitude) && !isNaN(longitude)
-          ? `${latitude},${longitude}`
-          : null;
-
-      const clockOutTime = new Date();
-      const duration = Math.round(
-        (clockOutTime.getTime() - new Date(active.clock_in_time).getTime()) / 60000
-      );
-
+      // Compute duration from clock_in stored on the row, using the SAME NOW()
+      // expression in the UPDATE so the saved duration is always consistent
+      // with the saved clock_out_time (no drift from JS Date arithmetic).
       const { rows } = await db.query(
         `UPDATE project_outings
-         SET clock_out_time     = NOW(),
-             clock_out_location = $1,
-             clock_out_remarks  = $2,
-             duration_minutes   = $3
-         WHERE id = $4
-         RETURNING *`,
-        [location, remarks || null, duration, active.id]
+            SET clock_out_time     = NOW(),
+                clock_out_location = $1,
+                clock_out_remarks  = $2,
+                duration_minutes   = GREATEST(
+                    1,
+                    CEIL(EXTRACT(EPOCH FROM (NOW() - clock_in_time)) / 60)::int
+                )
+          WHERE id = $3
+          RETURNING *`,
+        [location, remarks, active.id]
       );
 
       console.log(
-        `[outing/end] Ended outing id=${rows[0].id} for user ${userId}, duration=${duration}m`
+        `[outing/end] ended id=${rows[0].id} duration=${rows[0].duration_minutes}m`
       );
       res.json({ outing: rows[0], message: "Project task ended" });
     } catch (err: any) {
@@ -145,31 +172,30 @@ router.post(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /outing/history  (employee – their own outings, paginated)
+// GET /outing/history (employee — own outings, paginated)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/outing/history", verifyJWT, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
-    const { page = 1, limit = 10 } = req.query;
-    const offset = (Number(page) - 1) * Number(limit);
-
-    console.log(`[outing/history] user=${userId} page=${page} limit=${limit}`);
+    const page  = Math.max(1, Number(req.query.page)  || 1);
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10));
+    const offset = (page - 1) * limit;
 
     const countRes = await db.query(
-      "SELECT COUNT(*) FROM project_outings WHERE user_id = $1",
+      "SELECT COUNT(*)::int AS total FROM project_outings WHERE user_id = $1",
       [userId]
     );
-    const total = parseInt(countRes.rows[0].count);
+    const total = countRes.rows[0].total;
 
     const { rows } = await db.query(
       `SELECT * FROM project_outings
-       WHERE user_id = $1
-       ORDER BY clock_in_time DESC
-       LIMIT $2 OFFSET $3`,
+        WHERE user_id = $1
+        ORDER BY clock_in_time DESC
+        LIMIT $2 OFFSET $3`,
       [userId, limit, offset]
     );
 
-    res.json({ outings: rows, total, page: Number(page), limit: Number(limit) });
+    res.json({ outings: rows, total, page, limit });
   } catch (err) {
     console.error("[outing/history] Error:", err);
     res.status(500).json({ error: "Server error" });
@@ -177,7 +203,7 @@ router.get("/outing/history", verifyJWT, async (req: AuthRequest, res: Response)
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /outing/admin/history  (admin / manager – all employees, filterable)
+// GET /outing/admin/history (admin / manager — all employees, filterable)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get(
   "/outing/admin/history",
@@ -185,42 +211,37 @@ router.get(
   requireRole("admin", "manager"),
   async (req: AuthRequest, res: Response) => {
     try {
-      const { user_id, date_from, date_to, page = 1, limit = 20 } = req.query;
-      const offset = (Number(page) - 1) * Number(limit);
-      let params: any[] = [];
-      let whereClauses: string[] = [];
+      const { user_id, date_from, date_to } = req.query;
+      const page  = Math.max(1, Number(req.query.page)  || 1);
+      const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+      const offset = (page - 1) * limit;
 
-      if (user_id) {
-        params.push(user_id);
-        whereClauses.push(`o.user_id = $${params.length}`);
-      }
-      if (date_from) {
-        params.push(date_from);
-        whereClauses.push(`o.clock_in_time >= $${params.length}`);
-      }
-      if (date_to) {
-        params.push(date_to);
-        whereClauses.push(`o.clock_in_time <= $${params.length}::date + interval '1 day'`);
-      }
+      const params: any[] = [];
+      const where: string[] = [];
 
-      const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(" AND ")}` : "";
+      if (user_id)  { params.push(user_id);  where.push(`o.user_id = $${params.length}`); }
+      if (date_from){ params.push(date_from);where.push(`o.clock_in_time >= $${params.length}`); }
+      if (date_to)  { params.push(date_to);  where.push(`o.clock_in_time <= $${params.length}::date + interval '1 day'`); }
 
-      const countQuery = `SELECT COUNT(*) FROM project_outings o ${whereSql}`;
-      const countRes = await db.query(countQuery, params);
-      const total = parseInt(countRes.rows[0].count);
+      const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-      const dataQuery = `
-        SELECT o.*, u.name AS user_name, u.user_id AS employee_code
-        FROM project_outings o
-        JOIN users u ON u.id = o.user_id
-        ${whereSql}
-        ORDER BY o.clock_in_time DESC
-        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-      `;
-      params.push(limit, offset);
-      const { rows } = await db.query(dataQuery, params);
+      const countRes = await db.query(
+        `SELECT COUNT(*)::int AS total FROM project_outings o ${whereSql}`,
+        params
+      );
+      const total = countRes.rows[0].total;
 
-      res.json({ outings: rows, total, page: Number(page), limit: Number(limit) });
+      const { rows } = await db.query(
+        `SELECT o.*, u.name AS user_name, u.user_id AS employee_code
+           FROM project_outings o
+           JOIN users u ON u.id = o.user_id
+           ${whereSql}
+          ORDER BY o.clock_in_time DESC
+          LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
+      );
+
+      res.json({ outings: rows, total, page, limit });
     } catch (err) {
       console.error("[outing/admin/history] Error:", err);
       res.status(500).json({ error: "Server error" });

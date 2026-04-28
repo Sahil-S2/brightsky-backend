@@ -63,14 +63,24 @@ app.get("/api/health", (req, res) => {
 });
 
 app.get("/api/_version", (_req, res) => {
+  const outingPaths: string[] = [];
+  app._router.stack.forEach((layer: any) => {
+    if (layer.name === "router" && layer.handle?.stack) {
+      layer.handle.stack.forEach((s: any) => {
+        if (s.route?.path?.includes("outing")) {
+          outingPaths.push(
+            `${Object.keys(s.route.methods).join(",").toUpperCase()} ${s.route.path}`
+          );
+        }
+      });
+    }
+  });
   res.json({
     sha: process.env.RAILWAY_GIT_COMMIT_SHA || "unknown",
     branch: process.env.RAILWAY_GIT_BRANCH || "unknown",
-    builtAt: process.env.RAILWAY_DEPLOYMENT_ID || "unknown",
-    hasOuting: !!app._router.stack.some(l =>
-      l.regexp?.toString().includes("attendance") &&
-      l.handle?.stack?.some(s => s.route?.path?.includes("outing"))
-    ),
+    deploymentId: process.env.RAILWAY_DEPLOYMENT_ID || "unknown",
+    outingRoutes: outingPaths,
+    bootedAt: new Date().toISOString(),
   });
 });
 

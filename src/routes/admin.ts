@@ -80,7 +80,7 @@ router.get("/employees", async (req: AuthRequest, res: Response) => {
     // Paginated data
     const { rows } = await db.query(
       `SELECT u.id, u.name, u.email, u.role, u.status, u.created_at,
-              u.timezone, u.user_id,
+              u.timezone, u.user_id, u.work_mode,
               ep.employee_code, ep.department, ep.designation,
               ep.phone, ep.joined_at
        FROM users u
@@ -110,7 +110,7 @@ router.post("/employees", async (req: AuthRequest, res: Response) => {
   try {
     const {
       name, email, password, role, department, designation,
-      phone, employeeCode, joinedAt, userId, timezone
+      phone, employeeCode, joinedAt, userId, timezone, workMode
     } = req.body;
 
     if (!name || !password) {
@@ -148,10 +148,12 @@ router.post("/employees", async (req: AuthRequest, res: Response) => {
     const finalTimezone = timezone && allowedTimezones.includes(timezone)
       ? timezone : "America/New_York";
 
+    const finalWorkMode = workMode === "offsite" ? "offsite" : "onsite";
+
     const { rows } = await db.query(
-      `INSERT INTO users (name, full_name, email, password_hash, role, user_id, timezone)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [name, name, safeEmail, hash, role || "employee", finalUserId, finalTimezone]
+      `INSERT INTO users (name, full_name, email, password_hash, role, user_id, timezone, work_mode)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [name, name, safeEmail, hash, role || "employee", finalUserId, finalTimezone, finalWorkMode]
     );
     const user = rows[0];
 
@@ -212,7 +214,7 @@ router.post("/employees", async (req: AuthRequest, res: Response) => {
 router.put("/employees/:id", async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, email, role, department, designation, employeeCode, phone, joinedAt, userId } = req.body;
+    const { name, email, role, department, designation, employeeCode, phone, joinedAt, userId, workMode } = req.body;
 
     if (userId) {
       const { rows: existing } = await db.query(
@@ -224,9 +226,11 @@ router.put("/employees/:id", async (req: AuthRequest, res: Response) => {
       }
     }
 
+    const finalWorkMode = workMode === "offsite" ? "offsite" : "onsite";
+
     await db.query(
-      `UPDATE users SET name=$1, full_name=$1, email=$2, role=$3, user_id=$4 WHERE id=$5`,
-      [name, email||null, role||"employee", userId||null, id]
+      `UPDATE users SET name=$1, full_name=$1, email=$2, role=$3, user_id=$4, work_mode=$5 WHERE id=$6`,
+      [name, email||null, role||"employee", userId||null, finalWorkMode, id]
     );
     await db.query(
       `UPDATE employee_profiles
@@ -307,7 +311,8 @@ router.get("/attendance", async (req: AuthRequest, res: Response) => {
          s.break_minutes, s.personal_break_minutes, s.work_break_minutes,
          s.worked_minutes, s.regular_minutes, s.overtime_minutes,
          s.status, s.is_overtime, s.is_auto_corrected,
-         u.name, u.timezone AS user_timezone,
+         s.is_outside_geofence, s.estimated_minutes,
+         u.name, u.timezone AS user_timezone, u.work_mode,
          ep.employee_code
        FROM attendance_sessions s
        JOIN users u ON u.id = s.user_id
@@ -407,6 +412,7 @@ router.get("/reports/summary", async (req: AuthRequest, res: Response) => {
       SELECT
         u.id,
         u.name,
+        u.work_mode,
         ep.department,
         ep.designation,
         COALESCE(sa.total_sessions,        0) AS total_sessions,

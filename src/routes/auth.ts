@@ -47,12 +47,17 @@ router.post("/login", async (req: Request, res: Response) => {
       // Don't block login; just log the error
     }
 
-    // routes/auth.ts – inside login route
-const accessToken = jwt.sign(
-  { id: user.id, role: user.role, name: user.full_name || user.name, timezone: user.timezone },
-  process.env.JWT_SECRET!,
-  { expiresIn: "8h" }
-);
+    const accessToken = jwt.sign(
+      {
+        id: user.id,
+        role: user.role,
+        name: user.full_name || user.name,
+        timezone: user.timezone,
+        work_mode: user.work_mode || "onsite",
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn: "8h" }
+    );
 
     const refreshToken = jwt.sign(
       { id: user.id },
@@ -76,6 +81,7 @@ const accessToken = jwt.sign(
         role: user.role,
         userId: user.user_id,
         timezone: user.timezone,
+        work_mode: user.work_mode || "onsite",
       },
     });
   } catch (err) {
@@ -95,10 +101,16 @@ router.post("/refresh", async (req: Request, res: Response) => {
     const user = rows[0];
     if (!user) { res.status(401).json({ error: "User not found" }); return; }
     const accessToken = jwt.sign(
-  { id: user.id, role: user.role, name: user.full_name || user.name, timezone: user.timezone },
-  process.env.JWT_SECRET!,
-  { expiresIn: "8h" }
-);
+      {
+        id: user.id,
+        role: user.role,
+        name: user.full_name || user.name,
+        timezone: user.timezone,
+        work_mode: user.work_mode || "onsite",
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn: "8h" }
+    );
     res.json({ accessToken });
   } catch {
     res.status(401).json({ error: "Invalid refresh token" });
@@ -113,7 +125,7 @@ router.post("/logout", (req: Request, res: Response) => {
 router.get("/me", verifyJWT, async (req: AuthRequest, res: Response) => {
   try {
     const { rows } = await db.query(
-      `SELECT u.id, u.name, u.full_name, u.email, u.role, u.user_id,
+      `SELECT u.id, u.name, u.full_name, u.email, u.role, u.user_id, u.work_mode,
               ep.employee_code, ep.department, ep.designation, ep.phone, ep.joined_at
        FROM users u
        LEFT JOIN employee_profiles ep ON ep.user_id = u.id

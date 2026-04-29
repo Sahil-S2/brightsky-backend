@@ -24,7 +24,7 @@ router.post(
     try {
       // Check if already clocked out today
       const { rows: completed } = await db.query(
-        `SELECT id FROM attendance_sessions 
+        `SELECT id FROM attendance_sessions
          WHERE user_id = $1 AND work_date = CURRENT_DATE AND status = 'completed'`,
         [req.user!.id]
       );
@@ -33,35 +33,38 @@ router.post(
         return;
       }
 
-      const { latitude, longitude, photo, forceOutside, estimatedMinutes, remarks } = req.body;
+      const { latitude, longitude, photo, isOutsideGeofence, estimatedMinutes, note } = req.body;
 
-// Skip geofence check when employee confirmed Warning Clock-In
-if (!forceOutside) {
-  await assertOnSite(req.user!.id, latitude, longitude);
-}
+      // Only enforce geofence check for normal clock-ins.
+      // Warning clock-ins (isOutsideGeofence = true) bypass assertOnSite.
+      if (!isOutsideGeofence) {
+        await assertOnSite(req.user!.id, latitude, longitude);
+      }
 
-const session = await getOrCreateSession(req.user!.id);
+      const session = await getOrCreateSession(req.user!.id);
 
-// Mark session as outside-geofence and store estimated minutes for manager review
-if (forceOutside) {
-  await db.query(
-    `UPDATE attendance_sessions
-     SET is_outside_geofence = true,
-         estimated_minutes   = $1
-     WHERE id = $2`,
-    [estimatedMinutes ? parseInt(estimatedMinutes) : null, session.id]
-  );
-}
+      // Persist off-site warning data when employee confirmed outside geofence
+      if (isOutsideGeofence) {
+        await db.query(
+          `UPDATE attendance_sessions
+           SET is_outside_geofence = true, estimated_minutes = $1
+           WHERE id = $2`,
+          [estimatedMinutes ? Number(estimatedMinutes) : null, session.id]
+        );
+      }
 
-await recordPunch(req.user!.id, session.id, "clock_in", {
-  lat:       latitude,
-  lon:       longitude,
-  source:    "manual",
-  remarks:   remarks || "",
-  photoData: photo,
-});
-const data = await getSessionData(req.user!.id);
-res.json({ message: "Clocked in successfully", data });
+      await recordPunch(req.user!.id, session.id, "clock_in", {
+        lat: latitude,
+        lon: longitude,
+        source: "manual",
+        remarks: isOutsideGeofence
+          ? (note?.trim() || "Warning clock-in — employee confirmed off-site")
+          : "",
+        photoData: photo,
+      });
+
+      const data = await getSessionData(req.user!.id);
+      res.json({ message: "Clocked in successfully", data });
     } catch (err: any) {
       res.status(err.status || 500).json({ error: err.message || "Server error" });
     }
@@ -195,34 +198,33 @@ router.post(
       }
 
       // Auto clock‑out after shift end if outside geofence
-      // Auto clock‑out after shift end if outside geofence
-if (status === "clocked_in" && session && !session.clock_out_time) {
-  const schedule = await getEffectiveSchedule(req.user!.id);
+      if (status === "clocked_in" && session && !session.clock_out_time) {
+        const schedule = await getEffectiveSchedule(req.user!.id);
 
-  // Use the employee's own timezone (carried in the JWT), not the server's
-  // timezone (Railway = UTC). new Date().setHours() was previously setting
-  // the shift-end boundary in UTC, which was off by 4–9.5 hours depending
-  // on the employee's location.
-  const userTz = req.user!.timezone || "America/New_York";
-  const nowLocal = DateTime.now().setZone(userTz);
+        // Use the employee's own timezone (carried in the JWT), not the server's
+        // timezone (Railway = UTC). new Date().setHours() was previously setting
+        // the shift-end boundary in UTC, which was off by 4–9.5 hours depending
+        // on the employee's location.
+        const userTz = req.user!.timezone || "America/New_York";
+        const nowLocal = DateTime.now().setZone(userTz);
 
-  const [endH, endM] = schedule.end.split(':').map(Number);
-  let scheduledEnd = nowLocal.set({ hour: endH, minute: endM, second: 0, millisecond: 0 });
+        const [endH, endM] = schedule.end.split(':').map(Number);
+        let scheduledEnd = nowLocal.set({ hour: endH, minute: endM, second: 0, millisecond: 0 });
 
-  // Midnight-crossing schedule: shift end is on the following calendar day
-  if (schedule.crossesMidnight) {
-    scheduledEnd = scheduledEnd.plus({ days: 1 });
-  }
+        // Midnight-crossing schedule: shift end is on the following calendar day
+        if (schedule.crossesMidnight) {
+          scheduledEnd = scheduledEnd.plus({ days: 1 });
+        }
 
-  const afterShiftEnd = nowLocal > scheduledEnd;
-  if (afterShiftEnd && !onSite) {
-    await recordPunch(req.user!.id, session.id, "clock_out", {
-      lat: latitude, lon: longitude, source: "auto",
-      remarks: "Auto clock-out — shift ended and off-site",
-    });
-    status = await getEmployeeStatus(req.user!.id);
-  }
-}
+        const afterShiftEnd = nowLocal > scheduledEnd;
+        if (afterShiftEnd && !onSite) {
+          await recordPunch(req.user!.id, session.id, "clock_out", {
+            lat: latitude, lon: longitude, source: "auto",
+            remarks: "Auto clock-out — shift ended and off-site",
+          });
+          status = await getEmployeeStatus(req.user!.id);
+        }
+      }
 
       res.json({ onSite, distanceFt: Math.round(dist), status });
     } catch (err: any) {

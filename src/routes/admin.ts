@@ -448,6 +448,30 @@ router.get("/reports/summary", async (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET punch records for any session (admin/manager access — no ownership check)
+// Used by the frontend "Show Details" panel in AttendancePage
+router.get("/attendance/session/:sessionId/punches", async (req: AuthRequest, res: Response) => {
+  try {
+    const { sessionId } = req.params;
+    const { rows: sessionRows } = await db.query(
+      "SELECT id FROM attendance_sessions WHERE id = $1",
+      [sessionId]
+    );
+    if (sessionRows.length === 0) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    const { rows: punches } = await db.query(
+      "SELECT * FROM punch_records WHERE session_id = $1 ORDER BY punch_time ASC",
+      [sessionId]
+    );
+    res.json(punches);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // PUT update user timezone — unchanged
 router.put("/users/:id/timezone", async (req: AuthRequest, res: Response) => {
   try {

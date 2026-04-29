@@ -83,12 +83,26 @@ router.post(
   async (req: AuthRequest, res: Response) => {
     try {
       const { latitude, longitude } = req.body;
-      const session = await getOrCreateSession(req.user!.id);
-      // Employees who clocked in off-site can clock out from anywhere;
-      // on-site employees must still be within the geofence.
-      if (!session.is_outside_geofence) {
+
+      // Read is_outside_geofence directly from today's session row — do NOT rely
+      // on getOrCreateSession which may return a freshly-created row with the
+      // column defaulting to false even when the original clock-in was off-site.
+      const { rows: srows } = await db.query(
+        `SELECT id, is_outside_geofence
+         FROM attendance_sessions
+         WHERE user_id = $1 AND work_date = CURRENT_DATE
+         ORDER BY created_at DESC LIMIT 1`,
+        [req.user!.id]
+      );
+      const isOffSiteSession = srows[0]?.is_outside_geofence === true;
+
+      // On-site employees must still be within the geofence;
+      // off-site clock-in employees can clock out from anywhere.
+      if (!isOffSiteSession) {
         await assertOnSite(req.user!.id, latitude, longitude);
       }
+
+      const session = await getOrCreateSession(req.user!.id);
       await recordPunch(req.user!.id, session.id, "clock_out", {
         lat: latitude, lon: longitude, source: "manual",
       });
@@ -158,12 +172,24 @@ router.post(
   async (req: AuthRequest, res: Response) => {
     try {
       const { latitude, longitude } = req.body;
-      const session = await getOrCreateSession(req.user!.id);
-      // Off-site employees can end breaks from anywhere;
+
+      // Read is_outside_geofence directly — same reason as clock-out above.
+      const { rows: srows } = await db.query(
+        `SELECT id, is_outside_geofence
+         FROM attendance_sessions
+         WHERE user_id = $1 AND work_date = CURRENT_DATE
+         ORDER BY created_at DESC LIMIT 1`,
+        [req.user!.id]
+      );
+      const isOffSiteSession = srows[0]?.is_outside_geofence === true;
+
+      // Off-site clock-in employees can end breaks from anywhere;
       // on-site employees must still be within the geofence.
-      if (!session.is_outside_geofence) {
+      if (!isOffSiteSession) {
         await assertOnSite(req.user!.id, latitude, longitude);
       }
+
+      const session = await getOrCreateSession(req.user!.id);
       await recordPunch(req.user!.id, session.id, "break_end", {
         lat: latitude, lon: longitude, source: "manual",
       });

@@ -33,18 +33,23 @@ router.post(
         return;
       }
 
-      const { latitude, longitude, photo, isOutsideGeofence, estimatedMinutes, note } = req.body;
+      const { latitude, longitude, photo, isOutsideGeofence, forceOutside, estimatedMinutes, note, remarks } = req.body;
+
+      // Accept both field names for backwards compatibility with older frontend builds
+      const isOffSite = !!(isOutsideGeofence || forceOutside);
+      // Accept both 'note' and 'remarks' for the off-site warning text
+      const offSiteNote = note?.trim() || remarks?.trim() || "";
 
       // Only enforce geofence check for normal clock-ins.
-      // Warning clock-ins (isOutsideGeofence = true) bypass assertOnSite.
-      if (!isOutsideGeofence) {
+      // Warning clock-ins bypass assertOnSite.
+      if (!isOffSite) {
         await assertOnSite(req.user!.id, latitude, longitude);
       }
 
       const session = await getOrCreateSession(req.user!.id);
 
       // Persist off-site warning data when employee confirmed outside geofence
-      if (isOutsideGeofence) {
+      if (isOffSite) {
         await db.query(
           `UPDATE attendance_sessions
            SET is_outside_geofence = true, estimated_minutes = $1
@@ -57,8 +62,8 @@ router.post(
         lat: latitude,
         lon: longitude,
         source: "manual",
-        remarks: isOutsideGeofence
-          ? (note?.trim() || "Warning clock-in — employee confirmed off-site")
+        remarks: isOffSite
+          ? (offSiteNote || "Warning clock-in — employee confirmed off-site")
           : "",
         photoData: photo,
       });

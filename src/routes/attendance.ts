@@ -83,8 +83,12 @@ router.post(
   async (req: AuthRequest, res: Response) => {
     try {
       const { latitude, longitude } = req.body;
-      await assertOnSite(req.user!.id, latitude, longitude);
       const session = await getOrCreateSession(req.user!.id);
+      // Employees who clocked in off-site can clock out from anywhere;
+      // on-site employees must still be within the geofence.
+      if (!session.is_outside_geofence) {
+        await assertOnSite(req.user!.id, latitude, longitude);
+      }
       await recordPunch(req.user!.id, session.id, "clock_out", {
         lat: latitude, lon: longitude, source: "manual",
       });
@@ -154,8 +158,12 @@ router.post(
   async (req: AuthRequest, res: Response) => {
     try {
       const { latitude, longitude } = req.body;
-      await assertOnSite(req.user!.id, latitude, longitude);
       const session = await getOrCreateSession(req.user!.id);
+      // Off-site employees can end breaks from anywhere;
+      // on-site employees must still be within the geofence.
+      if (!session.is_outside_geofence) {
+        await assertOnSite(req.user!.id, latitude, longitude);
+      }
       await recordPunch(req.user!.id, session.id, "break_end", {
         lat: latitude, lon: longitude, source: "manual",
       });

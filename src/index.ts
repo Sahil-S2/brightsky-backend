@@ -21,6 +21,7 @@ import taskRoutes from "./routes/tasks";
 import routeRoutes from "./routes/route";
 import outingRoutes from "./routes/outing";   // 👈 new import for project outings
 import notificationRoutes from "./routes/notifications";
+import fuelRouter from "./routes/fuel";
 
 
 const app = express();
@@ -61,6 +62,7 @@ app.use("/api/security", securityRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/route", routeRoutes);
+app.use("/api/fuel", fuelRouter);
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });

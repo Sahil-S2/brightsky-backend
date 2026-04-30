@@ -56,6 +56,8 @@ router.get("/equipment", (req: AuthRequest, res: Response) => {
 //   equipment_id, equipment_brand, equipment_model,
 //   entry_type ("fill" | "eod"),
 //   job_site_id,
+//   job_site_name?,                     — optional pre-resolved name
+//   is_on_site?,                        — boolean: within geofence (null = not checked)
 //   fuel_level_before?, fuel_level_after?, fuel_level_remaining?,
 //   gallons_added?,
 //   hours_reading?,
@@ -73,6 +75,8 @@ router.post("/entry", async (req: AuthRequest, res: Response) => {
       equipment_id, equipment_brand, equipment_model,
       entry_type,
       job_site_id,
+      job_site_name: clientJobSiteName,
+      is_on_site,
       fuel_level_before, fuel_level_after, fuel_level_remaining,
       gallons_added,
       hours_reading,
@@ -102,14 +106,14 @@ router.post("/entry", async (req: AuthRequest, res: Response) => {
     }
 
     // ── Resolve job_site_id to name (for denormalized logging) ───────────────
-    let jobSiteName: string | null = null;
+    let jobSiteName: string | null = clientJobSiteName || null;
     if (job_site_id && job_site_id !== "__other__") {
       try {
         const { rows } = await db.query(
           "SELECT name FROM fuel_job_sites WHERE id = $1",
           [job_site_id]
         );
-        if (rows[0]) jobSiteName = rows[0].name;
+        if (rows[0]) jobSiteName = rows[0].name; // DB name takes precedence over client-supplied
       } catch {}
     }
 
@@ -120,6 +124,7 @@ router.post("/entry", async (req: AuthRequest, res: Response) => {
          equipment_id, equipment_brand, equipment_model,
          entry_type,
          job_site_id, job_site_name,
+         is_on_site,
          fuel_level_before, fuel_level_after, fuel_level_remaining,
          gallons_added,
          hours_reading,
@@ -133,21 +138,23 @@ router.post("/entry", async (req: AuthRequest, res: Response) => {
          $3, $4, $5,
          $6,
          $7, $8,
-         $9, $10, $11,
-         $12,
+         $9,
+         $10, $11, $12,
          $13,
-         $14, $15,
-         $16, $17,
-         $18, $19,
-         $20,
-         $21, ($21::timestamptz AT TIME ZONE COALESCE($22, 'America/New_York'))::date
+         $14,
+         $15, $16,
+         $17, $18,
+         $19, $20,
+         $21,
+         $22, ($22::timestamptz AT TIME ZONE COALESCE($23, 'America/New_York'))::date
        )
        RETURNING id, log_date`,
       [
         userId, req.user!.name,
         equipment_id, equipment_brand || "", equipment_model || "",
         entry_type,
-        job_site_id !== "__other__" ? job_site_id : null, jobSiteName,
+        job_site_id && job_site_id !== "__other__" ? job_site_id : null, jobSiteName,
+        is_on_site ?? null,
         fuel_level_before ?? null, fuel_level_after ?? null, fuel_level_remaining ?? null,
         gallons_added ?? null,
         hours_reading ?? null,

@@ -8,8 +8,10 @@
 //   - GET    /api/fuel/dashboard          — Admin analytics summary
 //   - GET    /api/fuel/alerts             — Theft/misuse alerts
 //   - PUT    /api/fuel/alerts/:id/resolve — Mark alert resolved
-//   - GET    /api/fuel/job-sites          — List job sites
+//   - GET    /api/fuel/job-sites          — List job sites (with coords + geofence)
 //   - POST   /api/fuel/job-sites          — Create job site (admin/manager)
+//   - PUT    /api/fuel/job-sites/:id      — Update job site (admin/manager)
+//   - DELETE /api/fuel/job-sites/:id      — Deactivate job site (admin/manager)
 //   - GET    /api/fuel/export             — CSV/JSON export (admin/manager)
 //   - GET    /api/fuel/equipment          — Equipment master list
 // =============================================================================
@@ -358,12 +360,13 @@ router.put("/alerts/:id/resolve", async (req: AuthRequest, res: Response) => {
 
 // =============================================================================
 // GET /api/fuel/job-sites
-// Returns active job sites for fuel entry selection.
+// Returns all active job sites including coordinates and geofence radius.
 // =============================================================================
 router.get("/job-sites", async (req: AuthRequest, res: Response) => {
   try {
     const { rows: sites } = await db.query(
-      `SELECT id, name, address, project_name, site_manager
+      `SELECT id, name, address, project_name, site_manager,
+              latitude, longitude, geofence_radius_ft, active
        FROM fuel_job_sites
        WHERE active = true
        ORDER BY name`
@@ -385,18 +388,87 @@ router.post("/job-sites", async (req: AuthRequest, res: Response) => {
     return;
   }
   try {
-    const { name, address, project_name, site_manager, latitude, longitude } = req.body;
+    const { name, address, project_name, site_manager, latitude, longitude, geofence_radius_ft } = req.body;
     if (!name?.trim()) {
       res.status(400).json({ error: "Site name is required." });
       return;
     }
     const { rows } = await db.query(
-      `INSERT INTO fuel_job_sites (name, address, project_name, site_manager, latitude, longitude, active)
-       VALUES ($1, $2, $3, $4, $5, $6, true)
+      `INSERT INTO fuel_job_sites
+         (name, address, project_name, site_manager, latitude, longitude, geofence_radius_ft, active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, true)
        RETURNING *`,
-      [name.trim(), address || null, project_name || null, site_manager || null, latitude || null, longitude || null]
+      [
+        name.trim(), address || null, project_name || null, site_manager || null,
+        latitude ?? null, longitude ?? null, geofence_radius_ft ?? 500,
+      ]
     );
     res.json({ site: rows[0] });
+  } catch (err: any) {
+    res.status(500).json({ error: "Server error." });
+  }
+});
+
+// =============================================================================
+// PUT /api/fuel/job-sites/:id
+// Update an existing job site. Admin/manager only.
+// =============================================================================
+router.put("/job-sites/:id", async (req: AuthRequest, res: Response) => {
+  if (!isAdmin(req.user!.role)) {
+    res.status(403).json({ error: "Admins and managers only." });
+    return;
+  }
+  try {
+    const { id } = req.params;
+    const { name, address, project_name, site_manager, latitude, longitude, geofence_radius_ft, active } = req.body;
+    if (!name?.trim()) {
+      res.status(400).json({ error: "Site name is required." });
+      return;
+    }
+    const { rows } = await db.query(
+      `UPDATE fuel_job_sites
+       SET name              = $1,
+           address           = $2,
+           project_name      = $3,
+           site_manager      = $4,
+           latitude          = $5,
+           longitude         = $6,
+           geofence_radius_ft= $7,
+           active            = $8,
+           updated_at        = NOW()
+       WHERE id = $9
+       RETURNING *`,
+      [
+        name.trim(), address || null, project_name || null, site_manager || null,
+        latitude ?? null, longitude ?? null, geofence_radius_ft ?? 500,
+        active !== false,
+        id,
+      ]
+    );
+    if (!rows[0]) { res.status(404).json({ error: "Job site not found." }); return; }
+    res.json({ site: rows[0] });
+  } catch (err: any) {
+    res.status(500).json({ error: "Server error." });
+  }
+});
+
+// =============================================================================
+// DELETE /api/fuel/job-sites/:id
+// Soft-delete (deactivate) a job site. Admin/manager only.
+// =============================================================================
+router.delete("/job-sites/:id", async (req: AuthRequest, res: Response) => {
+  if (!isAdmin(req.user!.role)) {
+    res.status(403).json({ error: "Admins and managers only." });
+    return;
+  }
+  try {
+    const { id } = req.params;
+    const { rows } = await db.query(
+      `UPDATE fuel_job_sites SET active = false, updated_at = NOW() WHERE id = $1 RETURNING id`,
+      [id]
+    );
+    if (!rows[0]) { res.status(404).json({ error: "Job site not found." }); return; }
+    res.json({ deleted: true, id });
   } catch (err: any) {
     res.status(500).json({ error: "Server error." });
   }

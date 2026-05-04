@@ -225,13 +225,16 @@ router.get("/logs", async (req: AuthRequest, res: Response) => {
          equipment_id, equipment_brand, equipment_model,
          entry_type,
          job_site_id, job_site_name,
+         is_on_site,
          fuel_level_before, fuel_level_after, fuel_level_remaining,
          gallons_added, hours_reading,
          remarks, supervisor_note,
          gps_lat, gps_lon,
          log_date,
-         logged_at
-         -- photos omitted from list view to keep payload small
+         logged_at,
+         -- Thumbnail: first 6KB of photo_before as a lightweight preview flag
+         CASE WHEN photo_before IS NOT NULL THEN true ELSE false END AS has_photo_before,
+         CASE WHEN photo_after  IS NOT NULL THEN true ELSE false END AS has_photo_after
        FROM fuel_logs
        ${where}
        ORDER BY logged_at DESC
@@ -242,6 +245,31 @@ router.get("/logs", async (req: AuthRequest, res: Response) => {
     res.json({ logs });
   } catch (err: any) {
     console.error("[fuel/logs]", err);
+    res.status(500).json({ error: "Server error." });
+  }
+});
+
+// =============================================================================
+// GET /api/fuel/logs/:id
+// Returns a single fuel log with full photo data. Employee can only fetch own.
+// =============================================================================
+router.get("/logs/:id", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const admin = isAdmin(req.user!.role);
+    const { id } = req.params;
+
+    const { rows } = await db.query(
+      `SELECT *
+       FROM fuel_logs
+       WHERE id = $1 ${admin ? "" : "AND operator_id = $2"}`,
+      admin ? [id] : [id, userId]
+    );
+
+    if (!rows[0]) return res.status(404).json({ error: "Log not found." });
+    res.json(rows[0]);
+  } catch (err: any) {
+    console.error("[fuel/logs/:id]", err);
     res.status(500).json({ error: "Server error." });
   }
 });
@@ -286,11 +314,30 @@ router.get("/dashboard", async (req: AuthRequest, res: Response) => {
     const { rows: byOperator } = await db.query(
       `SELECT operator_id, operator_name,
               COALESCE(SUM(gallons_added),0)::float AS total_gallons,
+              COUNT(*) FILTER (WHERE entry_type = 'fill') AS fill_count,
+              COUNT(*) FILTER (WHERE entry_type = 'eod')  AS eod_count,
               COUNT(*) AS entry_count
        FROM fuel_logs
        GROUP BY operator_id, operator_name
        ORDER BY total_gallons DESC
        LIMIT 10`
+    );
+
+    // Gallons by job site (top 10)
+    const { rows: bySite } = await db.query(
+      `SELECT COALESCE(job_site_name, 'Unspecified') AS site_name,
+              COALESCE(SUM(gallons_added),0)::float AS total_gallons,
+              COUNT(*) AS entry_count
+       FROM fuel_logs WHERE entry_type = 'fill'
+       GROUP BY COALESCE(job_site_name, 'Unspecified')
+       ORDER BY total_gallons DESC
+       LIMIT 10`
+    );
+
+    // Off-site entry count (last 30 days)
+    const { rows: offSiteCount } = await db.query(
+      `SELECT COUNT(*) AS cnt FROM fuel_logs
+       WHERE is_on_site = false AND log_date >= CURRENT_DATE - 29`
     );
 
     // Unresolved alert count
@@ -303,6 +350,8 @@ router.get("/dashboard", async (req: AuthRequest, res: Response) => {
       by_equipment: byEquipment,
       eod_today: eodToday,
       by_operator: byOperator,
+      by_site: bySite,
+      off_site_count: parseInt(offSiteCount[0]?.cnt || "0"),
       unresolved_alerts: parseInt(alertCount[0]?.cnt || "0"),
     });
   } catch (err: any) {

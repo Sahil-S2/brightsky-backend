@@ -25,6 +25,12 @@ const router = Router();
 // ── Auth required for every fuel route ────────────────────────────────────────
 router.use(verifyJWT);
 
+// ── Ensure every error from this router is JSON, never HTML ──────────────────
+router.use((req: any, res: Response, next: any) => {
+  res.setHeader("Content-Type", "application/json");
+  next();
+});
+
 // ── Role helpers ──────────────────────────────────────────────────────────────
 const isAdmin = (role?: string) =>
   ["admin", "manager", "owner"].includes(role || "");
@@ -71,6 +77,9 @@ router.get("/equipment", (req: AuthRequest, res: Response) => {
 // }
 // =============================================================================
 router.post("/entry", async (req: AuthRequest, res: Response) => {
+  // Always set JSON header first — prevents HTML error pages
+  res.setHeader("Content-Type", "application/json");
+  console.log("[fuel/entry] POST received from user:", req.user?.id, "| equipment:", req.body?.equipment_id, "| type:", req.body?.entry_type);
   try {
     const userId = req.user!.id;
     const {
@@ -183,6 +192,10 @@ router.post("/entry", async (req: AuthRequest, res: Response) => {
       gps_lon: Number(gps_lon) || null,
       equipment_brand: equipment_brand || "",
       operator_name: req.user!.name,
+      // Pass the recorded on-site flag so check 5 can skip false-positive GPS alerts
+      is_on_site: is_on_site === true || is_on_site === "true" ? true
+                : is_on_site === false || is_on_site === "false" ? false
+                : null,
     }).catch(console.error);
 
     res.json({ message: "Fuel entry saved.", id: logId });
@@ -657,6 +670,7 @@ async function runFuelChecks(
     gps_lon: number | null;
     equipment_brand: string;
     operator_name: string;
+    is_on_site: boolean | null;  // true = confirmed on-site; skip GPS check to avoid false positives
   }
 ) {
   const addAlert = async (
@@ -683,116 +697,96 @@ async function runFuelChecks(
   };
 
   // 1. Rapid repeat entry — same equipment, same
-
-  // 1. Rapid repeat entry — same equipment, same operator, within 15 minutes
-  try {
-    const { rows } = await db.query(
-      `SELECT id FROM fuel_logs
-       WHERE equipment_id = $1 AND operator_id = $2
-         AND entry_type = $3
-         AND logged_at > NOW() - INTERVAL '15 minutes'
-         AND id != $4`,
-      [equipmentId, operatorId, entryType, logId]
-    );
-    if (rows.length > 0) {
-      await addAlert("rapid_repeat_entry", "high",
-        `${data.equipment_brand} has ${rows.length + 1} ${entryType} entries within 15 minutes from the same operator.`);
-    }
-  } catch {}
-
+  // 1. Rapid repeat entry — same equipment, same operator within 15 minutes
   if (entryType === "fill") {
-    // 2. Unusually high gallons — >100 gal in a single fill
-    if (data.gallons_added > 100) {
-      await addAlert("high_consumption", "high",
-        `${data.gallons_added} gallons added in a single fill for ${data.equipment_brand}. Typical max is ~100 gal.`);
-    }
-
-    // 3. High fuel + very low hours delta
-    if (data.gallons_added > 40 && data.hours_reading > 0) {
-      try {
-        const { rows } = await db.query(
-          `SELECT hours_reading FROM fuel_logs
-           WHERE equipment_id = $1 AND entry_type = 'fill'
-             AND hours_reading IS NOT NULL AND id != $2
-           ORDER BY logged_at DESC LIMIT 1`,
-          [equipmentId, logId]
-        );
-        if (rows[0]?.hours_reading != null) {
-          const prevHours = Number(rows[0].hours_reading);
-          const delta = data.hours_reading - prevHours;
-          if (delta >= 0 && delta < 2) {
-            await addAlert("low_hours_high_fuel", "medium",
-              `${data.gallons_added} gallons added but only ${delta.toFixed(1)} machine hours elapsed since last fill on ${data.equipment_brand}.`);
-          }
-        }
-      } catch {}
-    }
-
-    // 4. Fuel level after fill is lower than expected (level_after < level_before)
-    if (data.fuel_level_after > 0 && data.fuel_level_before > 0 && data.fuel_level_after < data.fuel_level_before) {
-      await addAlert("meter_inconsistency", "medium",
-        `Fuel level after fill (${data.fuel_level_after}%) is lower than before fill (${data.fuel_level_before}%) on ${data.equipment_brand}. Possible reporting error.`);
-    }
+    try {
+      const { rows: recent } = await db.query(
+        `SELECT id FROM fuel_logs
+         WHERE equipment_id = $1 AND operator_id = $2
+           AND entry_type = 'fill'
+           AND logged_at >= NOW() - INTERVAL '15 minutes'
+           AND id != $3
+         LIMIT 1`,
+        [equipmentId, operatorId, logId]
+      );
+      if (recent.length > 0) {
+        await addAlert("rapid_repeat_entry", "high",
+          `Duplicate fuel fill within 15 minutes for ${data.equipment_brand}.`);
+      }
+    } catch (e) { console.error("[fuel check 1]", e); }
   }
 
-  if (entryType === "eod") {
-    // 5. Large unexplained EOD drop since last EOD (>30 percentage points, no fill in between)
+  // 2. Unusually high gallons added (>100 gal in a single fill)
+  if (entryType === "fill" && data.gallons_added > 100) {
+    await addAlert("high_fuel_amount", "high",
+      `Unusually large fill: ${data.gallons_added} gallons added to ${data.equipment_brand}.`);
+  }
+
+  // 3. High fuel add with suspiciously low hours (possible odometer manipulation)
+  if (entryType === "fill" && data.gallons_added > 50 && data.hours_reading > 0 && data.hours_reading < 10) {
+    await addAlert("suspicious_hours", "medium",
+      `High fill (${data.gallons_added} gal) with very low hours reading (${data.hours_reading} hrs) on ${data.equipment_brand}.`);
+  }
+
+  // 4. EOD level significantly lower than previous EOD (unexplained drop >30%)
+  if (entryType === "eod" && data.fuel_level_after > 0) {
     try {
-      const { rows } = await db.query(
-        `SELECT fl.fuel_level_remaining, fl.log_date
-         FROM fuel_logs fl
-         WHERE fl.equipment_id = $1 AND fl.entry_type = 'eod'
-           AND fl.id != $2
-         ORDER BY fl.logged_at DESC LIMIT 1`,
+      const { rows: prev } = await db.query(
+        `SELECT fuel_level_remaining FROM fuel_logs
+         WHERE equipment_id = $1 AND entry_type = 'eod' AND id != $2
+         ORDER BY logged_at DESC LIMIT 1`,
         [equipmentId, logId]
       );
-      if (rows[0]) {
-        const prev = Number(rows[0].fuel_level_remaining);
-        // Check if any fill happened between last EOD and now
-        const { rows: fills } = await db.query(
-          `SELECT COUNT(*) AS cnt FROM fuel_logs
-           WHERE equipment_id = $1 AND entry_type = 'fill'
-             AND log_date > $2 AND id != $3`,
-          [equipmentId, rows[0].log_date, logId]
-        );
-        const fillCount = parseInt(fills[0]?.cnt || "0");
-        const currentLevel = Number(
-          (await db.query("SELECT fuel_level_remaining FROM fuel_logs WHERE id = $1", [logId])).rows[0]?.fuel_level_remaining || 0
-        );
-        if (fillCount === 0 && prev - currentLevel > 30) {
-          await addAlert("high_consumption", "high",
-            `Fuel dropped from ${prev}% to ${currentLevel}% overnight with no recorded fill on ${data.equipment_brand}. Possible unauthorized use.`);
+      if (prev.length > 0) {
+        const prevLevel = Number(prev[0].fuel_level_remaining || 0);
+        const currLevel = Number(data.fuel_level_after || 0);
+        if (prevLevel - currLevel > 30) {
+          await addAlert("unexplained_fuel_drop", "medium",
+            `Fuel level dropped ${prevLevel - currLevel}% since last EOD on ${data.equipment_brand} (${prevLevel}% → ${currLevel}%).`);
         }
       }
-    } catch {}
+    } catch (e) { console.error("[fuel check 4]", e); }
   }
 
-  // 6. GPS off-site check (only if GPS provided and job sites exist)
-  if (data.gps_lat != null && data.gps_lon != null) {
+  // 5. Off-site GPS entry — GPS coords more than 2 miles from all registered job sites.
+  //    IMPORTANT: Skip this check when is_on_site === true. The frontend already ran the
+  //    Haversine geofence check and confirmed the operator was on-site. Firing an alert here
+  //    anyway causes false positives (e.g. when the nearest *known* site differs from the
+  //    actual job site). Only alert when is_on_site is null (not checked) or false (confirmed off).
+  if (data.is_on_site !== true && data.gps_lat !== null && data.gps_lon !== null) {
     try {
       const { rows: sites } = await db.query(
-        "SELECT name, latitude, longitude FROM fuel_job_sites WHERE active = true AND latitude IS NOT NULL"
+        `SELECT name, latitude, longitude FROM worksites
+         WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND active = true`
       );
       if (sites.length > 0) {
-        const distMiles = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+        const distMi = (lat1: number, lon1: number, lat2: number, lon2: number) => {
           const R = 3958.8;
           const dLat = (lat2 - lat1) * Math.PI / 180;
           const dLon = (lon2 - lon1) * Math.PI / 180;
           const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
           return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
         };
-        const closest = sites.reduce((best: any, s: any) => {
-          const d = distMiles(data.gps_lat!, data.gps_lon!, Number(s.latitude), Number(s.longitude));
-          return d < best.dist ? { site: s, dist: d } : best;
-        }, { site: null, dist: Infinity });
-
-        if (closest.dist > 2.0) {
-          await addAlert("off_site_entry", "medium",
-            `Fuel entry for ${data.equipment_brand} logged ${closest.dist.toFixed(1)} miles from nearest job site (${closest.site?.name || "unknown"}). Expected on-site logging.`);
+        const minDist = Math.min(...sites.map(s =>
+          distMi(data.gps_lat!, data.gps_lon!, parseFloat(s.latitude), parseFloat(s.longitude))
+        ));
+        if (minDist > 2) {
+          const nearest = sites.reduce((best, s) =>
+            distMi(data.gps_lat!, data.gps_lon!, parseFloat(s.latitude), parseFloat(s.longitude)) <
+            distMi(data.gps_lat!, data.gps_lon!, parseFloat(best.latitude), parseFloat(best.longitude)) ? s : best
+          );
+          await addAlert("off_site_entry", "high",
+            `Fuel entry recorded ${minDist.toFixed(1)} miles from nearest job site (${nearest.name}) for ${data.equipment_brand}.`,
+            nearest.name);
         }
       }
-    } catch {}
+    } catch (e) { console.error("[fuel check 5]", e); }
   }
 }
+
+// ── 404 catch-all — always JSON ───────────────────────────────────────────────
+router.use((_req: any, res: Response) => {
+  res.status(404).json({ error: "Fuel API endpoint not found." });
+});
 
 export default router;

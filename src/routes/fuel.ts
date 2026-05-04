@@ -284,23 +284,29 @@ router.get("/dashboard", async (req: AuthRequest, res: Response) => {
     return;
   }
   try {
-    // Total gallons by day (last 30 days)
+    // Total gallons by day (last 30 days) — includes today
     const { rows: dailyTotals } = await db.query(
-      `SELECT log_date::text, COALESCE(SUM(gallons_added),0)::float AS gallons
+      `SELECT log_date::text AS log_date,
+              COALESCE(SUM(gallons_added),0)::float AS gallons
        FROM fuel_logs
-       WHERE entry_type = 'fill' AND log_date >= CURRENT_DATE - 29
+       WHERE entry_type = 'fill'
+         AND log_date >= CURRENT_DATE - 29
+         AND log_date <= CURRENT_DATE
        GROUP BY log_date
-       ORDER BY log_date`
+       ORDER BY log_date ASC`
     );
 
     // Gallons by equipment (all time)
     const { rows: byEquipment } = await db.query(
       `SELECT equipment_id, equipment_brand, equipment_model,
-              COALESCE(SUM(gallons_added),0)::float AS total_gallons,
-              COUNT(*) AS entry_count
-       FROM fuel_logs WHERE entry_type = 'fill'
+              COALESCE(SUM(CASE WHEN entry_type = 'fill' THEN gallons_added ELSE 0 END),0)::float AS total_gallons,
+              COUNT(CASE WHEN entry_type = 'fill' THEN 1 END)::int AS fill_count,
+              COUNT(CASE WHEN entry_type = 'eod'  THEN 1 END)::int AS eod_count,
+              COUNT(*)::int AS entry_count,
+              MAX(log_date)::text AS last_log_date
+       FROM fuel_logs
        GROUP BY equipment_id, equipment_brand, equipment_model
-       ORDER BY total_gallons DESC`
+       ORDER BY total_gallons DESC NULLS LAST`
     );
 
     // EOD status today
@@ -326,18 +332,31 @@ router.get("/dashboard", async (req: AuthRequest, res: Response) => {
     // Gallons by job site (top 10)
     const { rows: bySite } = await db.query(
       `SELECT COALESCE(job_site_name, 'Unspecified') AS site_name,
-              COALESCE(SUM(gallons_added),0)::float AS total_gallons,
-              COUNT(*) AS entry_count
-       FROM fuel_logs WHERE entry_type = 'fill'
+              COALESCE(SUM(CASE WHEN entry_type = 'fill' THEN gallons_added ELSE 0 END),0)::float AS total_gallons,
+              COUNT(CASE WHEN entry_type = 'fill' THEN 1 END)::int AS fill_count,
+              COUNT(CASE WHEN is_on_site = false   THEN 1 END)::int AS off_site_count,
+              MAX(log_date)::text AS last_log_date
+       FROM fuel_logs
        GROUP BY COALESCE(job_site_name, 'Unspecified')
-       ORDER BY total_gallons DESC
+       ORDER BY total_gallons DESC NULLS LAST
        LIMIT 10`
     );
 
     // Off-site entry count (last 30 days)
     const { rows: offSiteCount } = await db.query(
       `SELECT COUNT(*) AS cnt FROM fuel_logs
-       WHERE is_on_site = false AND log_date >= CURRENT_DATE - 29`
+       WHERE is_on_site = false
+         AND log_date >= CURRENT_DATE - 29`
+    );
+
+    // KPI summary: today's totals
+    const { rows: todaySummary } = await db.query(
+      `SELECT
+         COALESCE(SUM(CASE WHEN entry_type = 'fill' THEN gallons_added ELSE 0 END),0)::float AS today_gallons,
+         COUNT(CASE WHEN entry_type = 'fill' THEN 1 END)::int AS today_fills,
+         COUNT(CASE WHEN entry_type = 'eod'  THEN 1 END)::int AS today_eods,
+         COUNT(*)::int AS today_entries
+       FROM fuel_logs WHERE log_date = CURRENT_DATE`
     );
 
     // Unresolved alert count
@@ -353,6 +372,7 @@ router.get("/dashboard", async (req: AuthRequest, res: Response) => {
       by_site: bySite,
       off_site_count: parseInt(offSiteCount[0]?.cnt || "0"),
       unresolved_alerts: parseInt(alertCount[0]?.cnt || "0"),
+      today_summary: todaySummary[0] || {},
     });
   } catch (err: any) {
     console.error("[fuel/dashboard]", err);
@@ -661,6 +681,8 @@ async function runFuelChecks(
       console.error("[fuel alert insert]", e);
     }
   };
+
+  // 1. Rapid repeat entry — same equipment, same
 
   // 1. Rapid repeat entry — same equipment, same operator, within 15 minutes
   try {

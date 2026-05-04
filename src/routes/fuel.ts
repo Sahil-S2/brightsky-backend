@@ -108,11 +108,13 @@ router.post("/entry", async (req: AuthRequest, res: Response) => {
     }
 
     // ── Resolve job_site_id to name (for denormalized logging) ───────────────
+    // job_site_id now references the unified `worksites` table (not fuel_job_sites).
     let jobSiteName: string | null = clientJobSiteName || null;
     if (job_site_id && job_site_id !== "__other__") {
       try {
+        // Look up in worksites first (unified table used by the frontend)
         const { rows } = await db.query(
-          "SELECT name FROM fuel_job_sites WHERE id = $1",
+          "SELECT name FROM worksites WHERE id = $1",
           [job_site_id]
         );
         if (rows[0]) jobSiteName = rows[0].name; // DB name takes precedence over client-supplied

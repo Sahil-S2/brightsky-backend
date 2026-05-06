@@ -49,9 +49,34 @@ export async function getEmployeeWorksite(userId: string) {
   return null;
 }
 
-export async function assertOnSite(userId: string, userLat: number, userLon: number) {
-  const worksite = await getEmployeeWorksite(userId);
+// assertOnSite checks the employee against a specific site (when siteId is provided)
+// or their default assigned site. This fixes the multi-site bug where the backend
+// was always validating against the default site even when the employee selected a
+// different one in the dropdown.
+export async function assertOnSite(
+  userId: string,
+  userLat: number,
+  userLon: number,
+  siteId?: string | number | null
+) {
+  let worksite: any = null;
+
+  if (siteId) {
+    // Verify the employee is actually assigned to the requested site before trusting it
+    const { rows } = await db.query(
+      `SELECT w.* FROM worksites w
+       JOIN employee_worksites ew ON ew.worksite_id = w.id
+       WHERE w.id = $1 AND ew.employee_id = $2
+       LIMIT 1`,
+      [siteId, userId]
+    );
+    worksite = rows[0] || null;
+  }
+
+  // Fall back to the employee's default/any assigned site, then global settings
+  if (!worksite) worksite = await getEmployeeWorksite(userId);
   if (!worksite) throw { status: 500, message: "No worksite configured." };
+
   const dist = distanceFeet(userLat, userLon, worksite.latitude, worksite.longitude);
   if (dist > worksite.radius_feet) {
     throw { status: 403, message: `Off-site (${Math.round(dist)} ft from ${worksite.name}).` };

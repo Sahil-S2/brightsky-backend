@@ -2,7 +2,7 @@ import { DateTime } from "luxon";
 import { Router, Response } from "express";
 import { verifyJWT, AuthRequest } from "../middleware/auth";
 import { auditLog } from "../middleware/audit";
-import { assertOnSite, getSiteSettings } from "../services/geofence";
+import { assertOnSite, getSiteSettings, getEmployeeWorksite, distanceFeet } from "../services/geofence";
 import {
   getEmployeeStatus,
   getOrCreateSession,
@@ -62,11 +62,14 @@ router.post(
         }
       }
 
-      const { latitude, longitude, photo, forceOutside, estimatedMinutes, remarks } = req.body;
+      // siteId: the specific job site the employee selected in the dropdown.
+      // Passing it to assertOnSite fixes the multi-site mismatch bug where the
+      // backend always validated against the employee's *default* site.
+      const { latitude, longitude, photo, forceOutside, estimatedMinutes, remarks, siteId } = req.body;
 
       // Enforce geofence for on-site clock-in unless employee confirmed off-site
       if (!forceOutside) {
-        await assertOnSite(userId, latitude, longitude);
+        await assertOnSite(userId, latitude, longitude, siteId ?? null);
       }
 
       const session = await getOrCreateSession(userId);
@@ -259,9 +262,13 @@ router.post(
     try {
       const { latitude, longitude } = req.body;
       const settings = await getSiteSettings();
-      const { distanceFeet } = await import("../services/geofence");
-      const dist = distanceFeet(latitude, longitude, settings.latitude, settings.longitude);
-      const onSite = dist <= settings.radius_feet;
+      // Bug fix: use the employee's assigned worksite for geofence checks, not the
+      // global site_settings coordinates (which always pointed at the company's
+      // primary/default location regardless of which site the employee selected).
+      const empSite = await getEmployeeWorksite(req.user!.id);
+      const site = empSite || settings;
+      const dist = distanceFeet(latitude, longitude, site.latitude, site.longitude);
+      const onSite = dist <= (site.radius_feet ?? settings.radius_feet);
       let status = await getEmployeeStatus(req.user!.id);
       const session = await getOrCreateSession(req.user!.id);
 

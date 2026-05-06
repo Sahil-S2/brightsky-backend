@@ -12,7 +12,7 @@ router.get("/", async (req: AuthRequest, res: Response) => {
       SELECT
         id, company_name, site_name, latitude, longitude, radius_feet,
         working_hours_start, working_hours_end,
-        clock_in_with_camera_enabled  AS "clockInWithCameraEnabled",
+        COALESCE(clock_in_with_camera_enabled, true) AS "clockInWithCameraEnabled",
         COALESCE(auto_clock_out_enabled, true) AS "autoClockOutEnabled"
       FROM site_settings WHERE id = 1
     `);
